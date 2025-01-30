@@ -24,8 +24,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(CONF_PULSAR_M_ID): cv.use_id(PulsarMComponent),
         cv.Optional(CONF_DATETIME): text_sensor.text_sensor_schema(),
         cv.Optional(CONF_ADDRESS): text_sensor.text_sensor_schema(),
-        cv.Optional(CONF_SERIAL_NR): text_sensor.text_sensor_schema(),
-        cv.Optional(CONF_STATE): text_sensor.text_sensor_schema(),
+        # cv.Optional(CONF_SERIAL_NR): text_sensor.text_sensor_schema(),
+        # cv.Optional(CONF_STATE): text_sensor.text_sensor_schema(),
     }
 )
 

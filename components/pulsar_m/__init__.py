@@ -52,7 +52,7 @@ async def to_code(config):
     await uart.register_uart_device(var, config)
 
     cg.add(var.set_receive_timeout(config[CONF_RECEIVE_TIMEOUT].total_milliseconds))
-    cg.add(var.set_requested_meter_address(config[CONF_ADDRESS]))
+    cg.add(var.set_meter_address(config[CONF_ADDRESS]))
 
     if CONF_FLOW_CONTROL_PIN in config:
         pin = await cg.gpio_pin_expression(config[CONF_FLOW_CONTROL_PIN])

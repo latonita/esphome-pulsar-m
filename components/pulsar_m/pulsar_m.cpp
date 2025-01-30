@@ -20,38 +20,9 @@
 namespace esphome {
 namespace pulsar_m {
 
-static const char *TAG = "Pulsar_M";
+static const char *TAG = "pulsar_m";
 
-static constexpr size_t rxBufferSize = 255;
-static std::array<uint8_t, rxBufferSize> rxBuffer;
-
-constexpr uint8_t bootupWaitUpdate = 10;  // avoid communications until properly booted
-
-enum class ReadFunction : uint8_t {
-  Find = 0x00,
-  Channel = 0x01,
-  DateTime = 0x04,
-  ChannelWeight = 0x07,
-  Parameter = 0x0A,
-};
-
-enum class ErrorCodes : uint8_t {
-  NoFunction = 0x01,
-  BitMaskError = 0x02,
-  WrongLength = 0x03,
-  NoParameter = 0x04,
-  WriteBlocked = 0x05,
-  OutOfRange = 0x06,
-  NoArchiveType = 0x07,
-  MaxArchiveValues = 0x08,
-  MAX_ERROR_CODE = 0x09
-};
-
-enum class Parameters : uint16_t {
-  DeviceId = 0x0000,
-  NetworkAddress = 0x0001,
-  FirmwareVersion = 0x0002,
-};
+static constexpr uint8_t BOOT_WAIT_S = 10;  // avoid communications until properly booted
 
 #pragma pack(1)
 // Протокол Пульсар-М
@@ -67,7 +38,7 @@ enum class Parameters : uint16_t {
 
 struct FrameHeader {
   uint32_t address_bcd;
-  ReadFunction fn;
+  ReadFunctionCode fn;
   uint8_t len;
 };
 
@@ -80,7 +51,7 @@ struct FrameFindReq {
   FrameHeader header;
   uint8_t zero8{0};
   FrameFooter footer{0, 0};
-  constexpr FrameFindReq() : header{.address_bcd = 0xF00F0FF0, .fn = ReadFunction::Find} {};
+  constexpr FrameFindReq() : header{.address_bcd = 0xF00F0FF0, .fn = ReadFunctionCode::Error} {};
 };
 
 struct FrameFindResp {
@@ -95,8 +66,8 @@ struct FrameDataReq {
   FrameFooter footer;
 
   FrameDataReq() = delete;
-  constexpr FrameDataReq(uint32_t address_bcd, ReadFunction selected_function, uint16_t id)
-      : header{.address_bcd = address_bcd, .fn = selected_function, .len = sizeof(FrameDataReq)}, footer{.id = id} {}
+  constexpr FrameDataReq(uint32_t address_bcd, ReadFunctionCode fn_code, uint16_t id)
+      : header{.address_bcd = address_bcd, .fn = fn_code, .len = sizeof(FrameDataReq)}, footer{.id = id} {}
 };
 
 struct FrameDateTimeReq {
@@ -104,8 +75,9 @@ struct FrameDateTimeReq {
   FrameFooter footer;
 
   FrameDateTimeReq() = delete;
-  constexpr FrameDateTimeReq(uint32_t address_bcd)
-      : header{.address_bcd = address_bcd, .fn = ReadFunction::DateTime, .len = sizeof(FrameDateTimeReq)}, footer{} {}
+  constexpr FrameDateTimeReq(uint32_t address_bcd, uint16_t id)
+      : header{.address_bcd = address_bcd, .fn = ReadFunctionCode::DateTime, .len = sizeof(FrameDateTimeReq)},
+        footer{.id = id} {}
 };
 
 struct FrameParamReq {
@@ -115,7 +87,7 @@ struct FrameParamReq {
 
   FrameParamReq() = delete;
   constexpr FrameParamReq(uint32_t address_bcd, uint16_t param, uint16_t id)
-      : header{.address_bcd = address_bcd, .fn = ReadFunction::Parameter, .len = sizeof(FrameParamReq)},
+      : header{.address_bcd = address_bcd, .fn = ReadFunctionCode::Parameter, .len = sizeof(FrameParamReq)},
         param{param},
         footer{.id = id} {}
 };
@@ -139,7 +111,8 @@ struct FrameDateTimeResp {
   uint8_t minute{0xff};
   uint8_t second{0xff};
   FrameFooter footer;
-  constexpr FrameDateTimeResp() : header{.fn = ReadFunction::DateTime, .len = sizeof(FrameDateTimeResp)}, footer{} {}
+  constexpr FrameDateTimeResp()
+      : header{.fn = ReadFunctionCode::DateTime, .len = sizeof(FrameDateTimeResp)}, footer{} {}
 };
 #pragma pack(0)
 
@@ -151,426 +124,469 @@ static_assert(sizeof(float) == 4, "float size is not 4 bytes.");
 
 float PulsarMComponent::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
 
+void PulsarMComponent::setup() {
+  ESP_LOGD(TAG, "setup");
+#ifdef USE_ESP32_FRAMEWORK_ARDUINO
+  iuart_ = make_unique<PulsarMUart>(*static_cast<uart::ESP32ArduinoUARTComponent *>(this->parent_));
+#endif
+
+#ifdef USE_ESP_IDF
+  iuart_ = make_unique<PulsarMUart>(*static_cast<uart::IDFUARTComponent *>(this->parent_));
+#endif
+
+#if USE_ESP8266
+  iuart_ = make_unique<PulsarMUart>(*static_cast<uart::ESP8266UartComponent *>(this->parent_));
+#endif
+  if (this->flow_control_pin_ != nullptr) {
+    this->flow_control_pin_->setup();
+  }
+
+  this->set_timeout(BOOT_WAIT_S * 1000, [this]() {
+    ESP_LOGD(TAG, "Boot timeout, component is ready to use");
+    this->clear_rx_buffers_();
+    this->set_next_state_(State::IDLE);
+  });
+}
+
 void PulsarMComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Pulsar-M:");
   LOG_UPDATE_INTERVAL(this);
-  ESP_LOGCONFIG(TAG, "  Meter address requested: %u", this->requested_meter_address_);
-  ESP_LOGCONFIG(TAG, "  Receive timeout: %.1fs", this->receive_timeout_ / 1e3f);
-  ESP_LOGCONFIG(TAG, "  Update interval: %.1fs", this->update_interval_ / 1e3f);
   LOG_PIN("  Flow Control Pin: ", this->flow_control_pin_);
-  LOG_TEXT_SENSOR("  ", "Datetime", this->datetime_);
-  LOG_TEXT_SENSOR("  ", "Address", this->address_);
-  LOG_TEXT_SENSOR("  ", "Serial number", this->serial_nr_);
-  ESP_LOGCONFIG(TAG, "Data errors %d, proper reads %d", this->data_.readErrors, this->data_.properReads);
+  ESP_LOGCONFIG(TAG, "  Receive timeout: %.1fs", this->receive_timeout_ms_ / 1e3f);
+  ESP_LOGCONFIG(TAG, "  Update interval: %.1fs", this->update_interval_ / 1e3f);
+  ESP_LOGCONFIG(TAG, "  Meter address: %u", this->meter_address_);
 }
 
-void PulsarMComponent::setup() {
-  if (this->reading_state_ != nullptr) {
-    this->reading_state_->publish_state(STATE_BOOTUP_WAIT);
+void PulsarMComponent::register_sensor(PulsarMSensor *sensor) {
+  ESP_LOGV(TAG, "register_sensor() channel %d", sensor->get_channel());
+  this->sensors_[sensor->get_channel()] = sensor;
+  this->channel_mask_ |= 1 << (sensor->get_channel() - 1);
+  this->values_[sensor->get_channel()] = nullopt;
+}
+
+void PulsarMComponent::abort_mission_() {
+  this->set_next_state_(State::IDLE);
+  this->report_failure(true);
+}
+
+void PulsarMComponent::report_failure(bool failure) {
+  if (!failure) {
+    this->stats_.failures_ = 0;
+    return;
   }
 
-  this->set_timeout(1000, [this]() { this->fsm_state_ = State::IDLE; });
+  this->stats_.failures_++;
+  if (this->failures_before_reboot_ > 0 && this->stats_.failures_ > this->failures_before_reboot_) {
+    ESP_LOGE(TAG, "Too many failures in a row. Let's try rebooting device.");
+    delay(100);
+    App.safe_reboot();
+  }
 }
 
 void PulsarMComponent::loop() {
-  if (!this->is_ready())
+  if (!this->is_ready() || this->state_ == State::NOT_INITIALIZED)
     return;
 
-  switch (this->fsm_state_) {
-    case State::NOT_INITIALIZED:
+  switch (this->state_) {
     case State::IDLE: {
-      uint32_t now = millis();
-      if (now - this->data_.lastGoodRead_ms > 5 * 60 * 1000) {
-        ESP_LOGE(TAG, "Rebooting due to no good reads from the meter for 5 minutes...");
-        delay(1000);
-        App.reboot();
+      this->update_last_rx_time_();
+    } break;
+
+    case State::WAIT: {
+      if (this->check_wait_timeout_()) {
+        this->set_next_state_(this->wait_.next_state);
+        this->update_last_rx_time_();
       }
+    } break;
+
+    case State::WAITING_FOR_RESPONSE: {
+      this->log_state_(&reading_state_.next_state);
+      received_frame_size_ = reading_state_.read_fn();
+
+      bool crc_is_ok = true;
+      if (reading_state_.check_crc && received_frame_size_ > 0) {
+        crc_is_ok = (0x0000 == this->crc_16_ibm(this->buffers_.in, received_frame_size_));
+      }
+
+      // special case for the unexpected frame with error. it has proper CRC, it has fn=0, len=11
+      // special case if we are in FindPulsar mode - double check
+
+      // happy path
+      if (received_frame_size_ > 0 && crc_is_ok) {
+        this->set_next_state_(reading_state_.next_state);
+        this->update_last_rx_time_();
+        this->stats_.crc_errors_ += reading_state_.err_crc;
+        this->stats_.crc_errors_recovered_ += reading_state_.err_crc;
+        this->stats_.invalid_frames_ += reading_state_.err_invalid_frames;
+        return;
+      }
+
+      // half-happy path
+      // if not timed out yet, wait for data to come a little more
+      if (crc_is_ok && !this->check_rx_timeout_()) {
+        return;
+      }
+      if (received_frame_size_ == 0) {
+        this->reading_state_.err_invalid_frames++;
+        ESP_LOGW(TAG, "RX timeout.");
+      } else if (!crc_is_ok) {
+        this->reading_state_.err_crc++;
+        ESP_LOGW(TAG, "Frame received, but CRC failed.");
+      } else {
+        this->reading_state_.err_invalid_frames++;
+        ESP_LOGW(TAG, "Frame corrupted.");
+      }
+
+      // if we are here, we have a timeout and no data
+      // it means we have a failure
+      // - either no reply from the meter at all
+      // - or corrupted data and id doesn't trigger stop function
+      if (this->buffers_.amount_in > 0) {
+        this->stats_.crc_errors_++;
+        ESP_LOGVV(TAG, "RX: %s", format_hex_pretty(this->buffers_.in, this->buffers_.amount_in).c_str());
+      }
+      this->clear_rx_buffers_();
+
+      if (reading_state_.mission_critical) {
+        this->stats_.crc_errors_ += reading_state_.err_crc;
+        this->stats_.invalid_frames_ += reading_state_.err_invalid_frames;
+        this->abort_mission_();
+        return;
+      }
+
+      if (reading_state_.tries_counter < reading_state_.tries_max) {
+        reading_state_.tries_counter++;
+        ESP_LOGW(TAG, "Retrying [%d/%d]...", reading_state_.tries_counter, reading_state_.tries_max);
+        this->send_frame_prepared_();
+        this->update_last_rx_time_();
+        return;
+      }
+      received_frame_size_ = 0;
+      // failure, advancing to next state with no data received (frame_size = 0)
+      this->stats_.crc_errors_ += reading_state_.err_crc;
+      this->stats_.invalid_frames_ += reading_state_.err_invalid_frames;
+      this->set_next_state_(reading_state_.next_state);
     } break;
 
     case State::FIND_PULSAR: {
-      this->fsm_state_ = State::GET_DATE_TIME;
+      this->stats_.connections_tried_++;
+      this->log_state_();
+      this->clear_rx_buffers_();
 
-      if (this->requested_meter_address_ != 0) {
+      // only send discovery frame if meter_address_ is not set (0)
+      if (this->meter_address_ != 0) {
+        this->set_next_state_(State::REQ_DATE_TIME);
         break;
       }
 
-      flush();
-      if (!this->find_pulsar()) {
-        this->fsm_state_ = State::IDLE;
+      FrameFindReq req;
+      this->send_frame_((uint8_t *) &req, sizeof(FrameFindReq));
+
+      auto read_fn = [this]() { return this->receive_frame_discovery_(); };
+      this->read_reply_and_go_next_state_(read_fn, State::READ_PULSAR_ADDRESS, 0, true, false);
+
+    } break;
+
+    case State::READ_PULSAR_ADDRESS: {
+      this->log_state_();
+      if (received_frame_size_) {
+        this->update_last_rx_time_();
+        this->set_next_state_(State::REQ_DATE_TIME);
       }
     } break;
 
-    case State::GET_METER_INFO: {
-      flush();
-      if (this->get_meter_info()) {
-        //   ESP_LOGI(TAG, "Found meter with s/n %u, we will be working with it from now on.",
-        //   this->data_.networkAddress); this->data_.meterFound = true; this->requested_meter_address_ =
-        //   this->data_.networkAddress;
+    case State::REQ_DATE_TIME: {
+      this->log_state_();
 
-        //   if (this->network_address_ != nullptr) {
-        //     this->network_address_->publish_state(to_string(this->data_.networkAddress));
-        //   }
-        //   if (this->serial_nr_ != nullptr) {
-        //     this->serial_nr_->publish_state(to_string(this->data_.serialNumber));
-        //   }
-        //   if (this->reading_state_ != nullptr) {
-        //     this->reading_state_->publish_state(STATE_METER_FOUND);
-        //   }
-        // } else {
-        //   if (this->reading_state_ != nullptr) {
-        //     this->reading_state_->publish_state(STATE_METER_NOT_FOUND);
-        //   }
+      FrameDateTimeReq req(this->meter_address_bcd_, this->generate_request_id());
+      auto id = req.footer.id;
+
+      this->send_frame_((uint8_t *) &req, sizeof(FrameDateTimeReq));
+
+      ESP_LOGD(TAG, "Requesting date/time from meter # %u, frame id = %d", this->meter_address_, id);
+      auto read_fn = [this, id]() { return this->receive_frame_data_(ReadFunctionCode::DateTime, id); };
+
+      this->read_reply_and_go_next_state_(read_fn, State::READ_DATE_TIME, 0, false, true);
+
+    } break;
+
+    case State::READ_DATE_TIME: {
+      this->log_state_();
+      this->set_next_state_(State::REQ_CHANNELS_DATA);
+      if (received_frame_size_ == 0) {
+        ESP_LOGD(TAG, "No date/time received");
+        break;
       }
-      //   if (get_energy_by_tariff()) {
-      //     if (this->tariff_ != nullptr) {
-      //       char tariff_str[3];
-      //       tariff_str[0] = 'T';
-      //       tariff_str[1] = '0' + (this->data_.energy.currentTariff & 0b11);
-      //       tariff_str[2] = 0;
-      //       this->tariff_->publish_state(tariff_str);
-      //     }
 
-      //     if (this->energy_total_ != nullptr) {
-      //       this->energy_total_->publish_state(this->data_.energy.total);
-      //     }
-      //     if (this->energy_t1_ != nullptr) {
-      //       this->energy_t1_->publish_state(this->data_.energy.t1);
-      //     }
-      //     if (this->energy_t2_ != nullptr) {
-      //       this->energy_t2_->publish_state(this->data_.energy.t2);
-      //     }
-      //     if (this->energy_t3_ != nullptr) {
-      //       this->energy_t3_->publish_state(this->data_.energy.t3);
-      //     }
-      //     if (this->energy_t4_ != nullptr) {
-      //       this->energy_t4_->publish_state(this->data_.energy.t4);
-      //     }
-      //     this->data_.got |= MASK_GOT_ENERGY;
-      //   }
-      if (this->meter_address_bcd_ == 0) {
-        ESP_LOGD(TAG, "Can't find meter address, skipping further requests");
-        this->fsm_state_ = State::IDLE;
+      FrameDateTimeResp &res = *(FrameDateTimeResp *) this->buffers_.in;
+
+      if (res.year == 0xFF || res.month == 0xFF || res.day == 0xFF || res.hour == 0xFF || res.minute == 0xFF ||
+          res.second == 0xFF) {
+        ESP_LOGW(TAG, "Date/time not set");
+        snprintf(this->datetime_str_, sizeof(this->datetime_str_), "Not set\0");
       } else {
-        this->fsm_state_ = State::GET_DATE_TIME;
+        uint16_t year = 2000 + res.year;
+        snprintf(this->datetime_str_, sizeof(this->datetime_str_), "%04u-%02u-%02u %02u:%02u:%02u", year, res.month,
+                 res.day, res.hour, res.minute, res.second);
+
+        ESP_LOGD(TAG, "Got datetime: %s", this->datetime_str_);
       }
+
     } break;
 
-      //    case State::GET_METER_INFO: {
-      // if (!this->data_.meterFound) {
-      //   flush();
-      //   if (get_meter_info()) {
-      //     ESP_LOGI(TAG, "Found meter with s/n %u, we will be working with it from now on.",
-      //     this->data_.networkAddress); this->data_.meterFound = true; requested_meter_address_ =
-      //     this->data_.networkAddress;
+    case State::REQ_CHANNELS_DATA: {
+      uint8_t num = this->sensors_.size();
+      if (num == 0) {
+        ESP_LOGD(TAG, "No sensors registered.");
+        this->set_next_state_(State::PUBLISH_INFO);
+        break;
+      }
+      // print out channel mask in hex and number of channels
+      ESP_LOGD(TAG, "Number of channels: %d (mask: 0x%08X)", num, this->channel_mask_);
+      ESP_LOGD(TAG, "Requesting channels data from meter # %u", this->meter_address_);
 
-      //     if (this->network_address_ != nullptr) {
-      //       this->network_address_->publish_state(to_string(this->data_.networkAddress));
-      //     }
-      //     if (this->serial_nr_ != nullptr) {
-      //       this->serial_nr_->publish_state(to_string(this->data_.serialNumber));
-      //     }
-      //     if (this->reading_state_ != nullptr) {
-      //       this->reading_state_->publish_state(STATE_METER_FOUND);
-      //     }
-      //   } else {
-      //     if (this->reading_state_ != nullptr) {
-      //       this->reading_state_->publish_state(STATE_METER_NOT_FOUND);
-      //     }
-      //   }
-      // }
-      // this->fsm_state_ = this->data_.meterFound ? State::GET_DATE_TIME : State::PUBLISH_INFO;
-      //    } break;
-    case State::GET_DATE_TIME: {
-      flush();
-      this->get_date_time();
+      FrameDataReq req_data(this->meter_address_bcd_, ReadFunctionCode::Channel, this->generate_request_id());
+      req_data.channel_mask = this->channel_mask_;
 
-      this->fsm_state_ = State::GET_CHANNELS_DATA;
+      this->send_frame_((uint8_t *) &req_data, sizeof(FrameDataReq));
+      auto id = req_data.footer.id;
+      auto read_fn = [this, id]() { return this->receive_frame_data_(ReadFunctionCode::Channel, id); };
+      this->read_reply_and_go_next_state_(read_fn, State::READ_CHANNELS_DATA, 0, false, true);
+
     } break;
 
-    case State::GET_CHANNELS_DATA: {
-      flush();
-      if (this->channel_mask_) {
-        uint8_t num = std::bitset<32>(this->channel_mask_).count();
-        // print out channel mask in hex and number of channels
-        ESP_LOGD(TAG, "Number of channels: %d (mask: 0x%08X)", num, this->channel_mask_);
+    case State::READ_CHANNELS_DATA: {
+      this->log_state_();
+      this->set_next_state_(State::PUBLISH_INFO);
 
-        this->get_channels_data();
+      if (received_frame_size_) {
+        uint8_t num = this->sensors_.size();  // one sensor per channel
+        uint16_t expected = sizeof(FrameHeader) + sizeof(double) * num + sizeof(FrameFooter);
+
+        if (received_frame_size_ != expected) {
+          ESP_LOGW(TAG, "Wrong frame size %d, expected %d", received_frame_size_, expected);
+
+          // clean values ? need to decide later
+
+          // for (auto &[channel, value] : this->values_) {
+          //   value = std::nullopt;
+          // }
+
+          // this->abort_mission_();
+
+          break;
+        }
+
+        double *pv = (double *) (this->buffers_.in + sizeof(FrameHeader));
+        for (auto &itv : this->values_) {
+          itv.second = *pv;
+          pv++;
+        }
       }
-      this->fsm_state_ = State::PUBLISH_INFO;
     } break;
 
     case State::PUBLISH_INFO: {
-      this->data_.lastGoodRead_ms = millis();
+      this->log_state_();
+      this->set_next_state_(State::IDLE);
 
-      if (this->data_.got == 0b111) {
-        this->data_.failure = false;
-        this->data_.initialized = true;
-        if (this->reading_state_ != nullptr) {
-          this->reading_state_->publish_state(STATE_OK);
-        }
-        this->data_.lastGoodRead_ms = millis();
-      } else {
-        ESP_LOGI(TAG, "Got no or partial data %o", this->data_.got);
-        this->data_.failure = true;
-        if (this->reading_state_ != nullptr) {
-          this->reading_state_->publish_state((this->data_.got == 0) ? STATE_DATA_FAIL : STATE_PARTIAL_OK);
+      if (this->values_.empty()) {
+        ESP_LOGW(TAG, "No values to publish");
+        break;
+      }
+
+      for (auto &its : this->values_) {
+        auto channel = its.first;
+        auto value = its.second;
+        if (value.has_value()) {
+          this->sensors_[channel]->publish_state(*value);
         }
       }
-      ESP_LOGD(TAG, "Data errors %d, proper reads %d", this->data_.readErrors, this->data_.properReads);
-      this->fsm_state_ = State::IDLE;
+#ifdef USE_TEXT_SENSOR
+      if (this->datetime_text_sensor_ != nullptr) {
+        this->datetime_text_sensor_->publish_state(this->datetime_str_);
+      }
+      if (this->address_text_sensor_ != nullptr) {
+        this->address_text_sensor_->publish_state(to_string(this->meter_address_));
+      }
+#endif
     } break;
+
     default:
       break;
   }
 }
 
 void PulsarMComponent::update() {
-  if (this->is_ready() && this->fsm_state_ == State::IDLE) {
-    ESP_LOGV(TAG, "Update: Initiating new data collection");
-    this->data_.got = 0;
-    this->fsm_state_ = State::FIND_PULSAR;
-  } else {
-    ESP_LOGV(TAG, "Update: Component not ready yet");
-  }
-}
-
-void PulsarMComponent::register_sensor(PulsarMSensor *sensor) {
-  ESP_LOGD(TAG, "register_sensor() channel %d", sensor->get_channel());
-  this->sensors_[sensor->get_channel()] = sensor;
-  this->channel_mask_ |= 1 << (sensor->get_channel() - 1);
-}
-
-bool PulsarMComponent::find_pulsar() {
-  ESP_LOGD(TAG, "find_pulsar()");
-
-  FrameFindReq req;
-  send_command((uint8_t *) &req, sizeof(FrameFindReq));
-
-  if (!receive_proper_response(sizeof(FrameFindResp), 0))
-    return false;
-
-  FrameFindResp &res = *(FrameFindResp *) rxBuffer.data();
-
-  uint32_t addr = 0;
-  if (this->bcd4_to_uint32(res.address, &addr)) {
-    ESP_LOGD(TAG, "Got reply from meter with address %u", addr);
-    this->meter_address_bcd_ = res.address;
-    this->requested_meter_address_ = addr;
-
-    if (this->address_ != nullptr) {
-      this->address_->publish_state(to_string(addr));
-    }
-  } else {
-    ESP_LOGW(TAG, "get_date_time() Got reply from meter with unknown address/wrong BCD");
-    return false;
-  }
-  return true;
-}
-
-bool PulsarMComponent::get_meter_info() {
-  ESP_LOGD(TAG, "get_meter_info()");
-
-  // FrameParamReq req_addr(this->meter_address_bcd_, (uint16_t) Parameters::NetworkAddress,
-  // this->generate_request_id()); send_command((uint8_t *) &req_addr, sizeof(FrameParamReq)); uint16_t expectedSize =
-  // sizeof(FrameHeader) + sizeof(uint32_t) + sizeof(FrameFooter); if (!receive_proper_response(expectedSize,
-  // req_addr.footer.id))
-  //   return false;
-
-  // FrameDateTimeResp &res = *(FrameDateTimeResp *) rxBuffer.data();
-
-  // FrameParamReq req_fw(this->meter_address_bcd_, (uint16_t) Parameters::FirmwareVersion,
-  // this->generate_request_id()); send_command((uint8_t *) &req_fw, sizeof(FrameParamReq)); expectedSize =
-  // sizeof(FrameHeader) + sizeof(uint64_t) + sizeof(FrameFooter); if (!receive_proper_response(expectedSize,
-  // req_fw.footer.id))
-  //   return false;
-
-  return true;
-}
-
-bool PulsarMComponent::get_date_time() {
-  ESP_LOGD(TAG, "get_date_time()");
-
-  FrameDateTimeReq req(this->meter_address_bcd_ > 0 ? this->meter_address_bcd_
-                                                    : this->uint32_to_bcd4(this->requested_meter_address_));
-  req.footer.id = this->generate_request_id();
-
-  send_command((uint8_t *) &req, sizeof(FrameDateTimeReq));
-
-  if (!receive_proper_response(sizeof(FrameDateTimeResp), req.footer.id))
-    return false;
-
-  FrameDateTimeResp &res = *(FrameDateTimeResp *) rxBuffer.data();
-
-  char buffer[20];  // Buffer for "YYYY-MM-DD HH:MM:SS"
-  if (res.year == 0xFF || res.month == 0xFF || res.day == 0xFF || res.hour == 0xFF || res.minute == 0xFF ||
-      res.second == 0xFF) {
-    ESP_LOGW(TAG, "get_date_time() Date/time not set");
-    snprintf(buffer, sizeof(buffer), "Not set");
-  } else {
-    uint16_t year = 2000 + res.year;
-    snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u %02u:%02u:%02u", year, res.month, res.day, res.hour, res.minute,
-             res.second);
-
-    ESP_LOGD(TAG, "get_date_time() Got reply from meter: %s", buffer);
-  }
-  
-  if (this->datetime_ != nullptr) {
-    this->datetime_->publish_state(buffer);
-  }
-
-  return true;
-}
-
-bool PulsarMComponent::get_channels_data() {
-  ESP_LOGV(TAG, "get_channels_data()");
-  uint8_t channelsNum = this->sensors_.size();  // one sensor per channel
-  uint16_t expectedSizeChannels = sizeof(FrameHeader) + sizeof(double) * channelsNum + sizeof(FrameFooter);
-
-  // ---
-  ESP_LOGD(TAG, "get_channels_data() Requesting channels data from meter with address %u",
-           this->requested_meter_address_);
-  FrameDataReq req_data(this->meter_address_bcd_, ReadFunction::Channel, this->generate_request_id());
-  req_data.channel_mask = this->channel_mask_;
-  send_command((uint8_t *) &req_data, sizeof(FrameDataReq));
-
-  if (!receive_proper_response(expectedSizeChannels, req_data.footer.id))
-    return false;
-
-  uint8_t *rxBufferPtr = rxBuffer.data() + 6;
-
-  double *valuePtr = (double *) rxBufferPtr;
-
-  for (const auto &[channel, sensor] : this->sensors_) {
-    ESP_LOGD(TAG, "Channel %d: value %lf", sensor->get_channel(), *valuePtr);
-    sensor->publish_state(*valuePtr);
-    valuePtr++;
-  }
-
-  return true;
-}
-
-void PulsarMComponent::send_command(uint8_t *buffer, size_t len) {
-  if (len < 10 || len > 255) {
-    ESP_LOGE(TAG, "send_command() wrong len %d", len);
+  if (!this->is_idling()) {
+    ESP_LOGV(TAG, "Starting data collection impossible - component not ready");
     return;
   }
+  ESP_LOGV(TAG, "Starting data collection");
+  this->set_next_state_(State::FIND_PULSAR);
+}
+
+void PulsarMComponent::set_meter_address(uint32_t address) {
+  this->meter_address_ = address;
+  this->meter_address_bcd_ = this->uint32_to_bcd4(address);
+}
+
+void PulsarMComponent::log_state_(State *next_state) {
+  if (this->state_ != this->last_reported_state_) {
+    if (next_state == nullptr) {
+      ESP_LOGD(TAG, "State::%s", this->state_to_string(this->state_));
+    } else {
+      ESP_LOGD(TAG, "State::%s -> %s", this->state_to_string(this->state_), this->state_to_string(*next_state));
+    }
+    this->last_reported_state_ = this->state_;
+  }
+}
+
+void PulsarMComponent::read_reply_and_go_next_state_(ReadFunction read_fn, State next_state, uint8_t retries,
+                                                     bool mission_critical, bool check_crc) {
+  reading_state_ = {};
+  reading_state_.read_fn = read_fn;
+  reading_state_.mission_critical = mission_critical;
+  reading_state_.tries_max = retries;
+  reading_state_.tries_counter = 0;
+  reading_state_.check_crc = check_crc;
+  reading_state_.next_state = next_state;
+  received_frame_size_ = 0;
+
+  set_next_state_(State::WAITING_FOR_RESPONSE);
+}
+
+void PulsarMComponent::prepare_frame_(const uint8_t *data, size_t length, bool calc_crc) {
+  memcpy(this->buffers_.out, data, length);
+  this->buffers_.amount_out = length;
+  if (calc_crc && length > 2) {
+    uint16_t crc = this->crc_16_ibm(data, length - 2);
+    this->buffers_.out[length - 2] = crc & 0xFF;
+    this->buffers_.out[length - 1] = crc >> 8;
+  }
+}
+
+void PulsarMComponent::send_frame_(const uint8_t *data, size_t length, bool calc_crc) {
+  this->prepare_frame_(data, length, calc_crc);
+  this->send_frame_prepared_();
+}
+
+void PulsarMComponent::send_frame_prepared_() {
   if (this->flow_control_pin_ != nullptr)
     this->flow_control_pin_->digital_write(true);
 
-  uint16_t crc = this->crc_16_ibm(buffer, len - 2);
-  FrameFooter *footer = (FrameFooter *) &buffer[len - sizeof(FrameFooter)];
-  footer->crc = crc;
-
-  ESP_LOGD(TAG, "TX: %s, len: %d", format_hex_pretty(buffer, len).c_str(), len);
-  write_array((const uint8_t *) buffer, len);
+  this->write_array(this->buffers_.out, this->buffers_.amount_out);
 
   if (this->flow_control_pin_ != nullptr)
     this->flow_control_pin_->digital_write(false);
-}
 
-/*
-Стандартные коды ошибок:
-0x01 – отсутствует запрашиваемый код функции.
-0x02 – ошибка в битовой маске запроса.
-0x03 – ошибочная длинна запроса.
-0x04 – отсутствует параметр.
-0x05 – запись заблокирована, требуется авторизация.
-0x06 – записываемое значение (параметр) находится вне заданного диапазона.
-0x07 – отсутствует запрашиваемый тип архива.
-0x08 – превышение максимального количества архивных значений за один пакет.
-*/
-const char *PulsarMComponent::error_code_to_string(uint8_t error) {
-  switch (error) {
-    case 0x01:
-      return "No function";
-    case 0x02:
-      return "Bit mask error";
-    case 0x03:
-      return "Wrong request length";
-    case 0x04:
-      return "Parameter missing";
-    case 0x05:
-      return "Write blocked, authorization required";
-    case 0x06:
-      return "Value out of range";
-    case 0x07:
-      return "Archive type missing";
-    case 0x08:
-      return "Max archive values exceeded";
-    case 0x0B:
-      return "Unknown error - selected channel not supported (?)";
-    default:
-      return "Unknown error";
-  }
-}
-
-bool PulsarMComponent::receive_proper_response(const uint16_t expectedSize, const uint16_t frameId) {
-  auto stopWaiting = millis() + this->receive_timeout_;
-  uint16_t bytesRead = 0;
-  int currentByte = 0;
-  ESP_LOGV(TAG, "Expecting %d bytes", expectedSize);
-  while ((bytesRead < expectedSize) && (millis() < stopWaiting)) {
-    while (available() > 0 && bytesRead < expectedSize) {
-      currentByte = read();
-      if (currentByte >= 0) {
-        rxBuffer[bytesRead++] = (uint8_t) currentByte;
-      }
-      yield();
-    }
-    delay(5);
-    yield();
-    ESP_LOGV(TAG, "Got some bytesRead %d", bytesRead);
-  }
-  // v
-  ESP_LOGD(TAG, "Bytes expected/read %d/%d", expectedSize, bytesRead);
+  ESP_LOGD(TAG, "TX: %s, len: %d", format_hex_pretty(this->buffers_.out, this->buffers_.amount_out).c_str(),
+           this->buffers_.amount_out);
   // vv
-  if (bytesRead > 0) {
-    ESP_LOGD(TAG, "RX: %s, len: %d", format_hex_pretty((const uint8_t *) rxBuffer.data(), bytesRead).c_str(),
-             bytesRead);
-  }
+}
 
-  if (crc_16_ibm(rxBuffer.data(), bytesRead) != 0x0000) {
-    ESP_LOGE(TAG, "receiveProperResponse CRC failed");
-    this->data_.readErrors++;
-    return false;
-  }
+size_t PulsarMComponent::receive_frame_discovery_() {
+  auto stop_fn = [this](const uint8_t *data, size_t len) {
+    if (len != sizeof(FrameFindResp))
+      return false;
 
-  // ERROR
-  if (bytesRead == 11 && rxBuffer[4] == 0x00) {
-    ESP_LOGE(TAG, "receiveProperResponse. Device returned error code %d - %s", rxBuffer[5],
-             this->error_code_to_string(rxBuffer[5]));
-    return false;
-  }
+    if (this->crc_16_ibm(data, len) != 0) {
+      return false;
+    }
 
-  if (bytesRead != expectedSize) {
-    ESP_LOGE(TAG, "receiveProperResponse wrong size");
-    this->data_.readErrors++;
+    FrameFindResp *resp = (FrameFindResp *) data;
+    uint32_t addr = 0;
+    if (this->bcd4_to_uint32(resp->address, &addr)) {
+      ESP_LOGV(TAG, "Got a reply from meter with address %u", addr);
+      this->meter_address_bcd_ = resp->address;
+      this->meter_address_ = addr;
+      return true;
+    }
+
+    ESP_LOGE(TAG, "Got a erroneous reply from meter - wrong BCD/address");
     return false;
   };
 
-  if (frameId != 0) {
-    FrameFooter *footer = (FrameFooter *) &rxBuffer[expectedSize - sizeof(FrameFooter)];
-    if (footer->id != frameId) {
-      ESP_LOGE(TAG, "receiveProperResponse wrong frame id");
-      this->data_.readErrors++;
-      return false;
-    }
-  }
-
-  this->data_.properReads++;
-  return true;
+  return this->receive_frame_(stop_fn);
 }
 
-// //----------------------------------------------------------------------------
-// // convert uint32 to 4-byte BCD, each byte is 2 decimal digits, 8 digits in total
-// // example: input = 04026591, output = 0x04 0x02 0x65 0x91
-// //----------------------------------------------------------------------------
-// void PulsarMComponent::uint32_to_bcd4(uint8_t *buffer, uint32_t value) {
-//   for (int i = 3; i >= 0; --i) {
-//     buffer[i] = ((value / 10) % 10) << 4 | ((value % 10));
-//     value /= 100;
-//   }
-// }
+size_t PulsarMComponent::receive_frame_data_(ReadFunctionCode fn_code, uint16_t id) {
+  auto stop_fn = [this, fn_code, id](const uint8_t *data, size_t len) {
+    if (len < sizeof(FrameHeader) + sizeof(FrameFooter))
+      return false;
+
+    if (this->crc_16_ibm(data, len) != 0) {
+      return false;
+    }
+
+    FrameHeader *header = (FrameHeader *) data;
+    FrameFooter *footer = (FrameFooter *) (data + len - sizeof(FrameFooter));
+
+    if (len == 11 && header->fn == ReadFunctionCode::Error) {
+      ESP_LOGW(TAG, "Error frame received: %s", error_code_to_string(data[sizeof(FrameHeader)]));
+      return false;
+    }
+
+    if (header->fn != fn_code) {
+      ESP_LOGW(TAG, "Unexpected function code %d, expected %d", header->fn, fn_code);
+      return false;
+    }
+
+    if (footer->id != id) {
+      ESP_LOGW(TAG, "Unexpected id %d, expected %d", footer->id, id);
+      return false;
+    }
+
+    return true;
+  };
+
+  return this->receive_frame_(stop_fn);
+}
+
+size_t PulsarMComponent::receive_frame_(FrameStopFunction stop_fn) {
+  const uint32_t read_time_limit_ms = 25;
+  size_t ret_val;
+
+  auto count = this->available();
+  if (count <= 0)
+    return 0;
+
+  uint32_t read_start = millis();
+  uint8_t *p;
+  while (count-- > 0) {
+    if (millis() - read_start > read_time_limit_ms) {
+      return 0;
+    }
+
+    if (this->buffers_.amount_in < MAX_IN_BUF_SIZE) {
+      p = &this->buffers_.in[this->buffers_.amount_in];
+      if (!iuart_->read_one_byte(p)) {
+        return 0;
+      }
+      this->buffers_.amount_in++;
+    } else {
+      memmove(this->buffers_.in, this->buffers_.in + 1, this->buffers_.amount_in - 1);
+      p = &this->buffers_.in[this->buffers_.amount_in - 1];
+      if (!iuart_->read_one_byte(p)) {
+        return 0;
+      }
+    }
+
+    if (stop_fn(this->buffers_.in, this->buffers_.amount_in)) {
+      //      ESP_LOGV(TAG, "RX: %s", format_frame_pretty(this->buffers_.in, this->buffers_.amount_in).c_str());
+      ESP_LOGD(TAG, "RX: %s, len: ", format_hex_pretty(this->buffers_.in, this->buffers_.amount_in).c_str(),
+               this->buffers_.amount_in);
+      ret_val = this->buffers_.amount_in;
+      this->buffers_.amount_in = 0;
+      this->update_last_rx_time_();
+      return ret_val;
+    }
+
+    yield();
+    App.feed_wdt();
+  }
+  return 0;
+}
+
 //----------------------------------------------------------------------------
 // convert uint32 to 4-byte BCD, each byte is 2 decimal digits, 8 digits in total
 // example: input = 04026591, output = 0x04 0x02 0x65 0x91
@@ -620,5 +636,85 @@ uint16_t PulsarMComponent::crc_16_ibm(uint8_t const *buffer, size_t len) {
   }
   return result;
 }
+
+const char *PulsarMComponent::state_to_string(State state) {
+  switch (state) {
+    case State::IDLE:
+      return "IDLE";
+    case State::WAIT:
+      return "WAIT";
+    case State::WAITING_FOR_RESPONSE:
+      return "WAITING_FOR_RESPONSE";
+    case State::FIND_PULSAR:
+      return "FIND_PULSAR";
+    case State::READ_PULSAR_ADDRESS:
+      return "READ_PULSAR_ADDRESS";
+    case State::REQ_DATE_TIME:
+      return "REQ_DATE_TIME";
+    case State::READ_DATE_TIME:
+      return "READ_DATE_TIME";
+    case State::REQ_CHANNELS_DATA:
+      return "REQ_CHANNELS_DATA";
+    case State::READ_CHANNELS_DATA:
+      return "READ_CHANNELS_DATA";
+    case State::PUBLISH_INFO:
+      return "PUBLISH_INFO";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+/*
+Стандартные коды ошибок:
+0x01 – отсутствует запрашиваемый код функции.
+0x02 – ошибка в битовой маске запроса.
+0x03 – ошибочная длинна запроса.
+0x04 – отсутствует параметр.
+0x05 – запись заблокирована, требуется авторизация.
+0x06 – записываемое значение (параметр) находится вне заданного диапазона.
+0x07 – отсутствует запрашиваемый тип архива.
+0x08 – превышение максимального количества архивных значений за один пакет.
+*/
+const char *PulsarMComponent::error_code_to_string(uint8_t error) {
+  switch (error) {
+    case 0x01:
+      return "No function";
+    case 0x02:
+      return "Bit mask error";
+    case 0x03:
+      return "Wrong request length";
+    case 0x04:
+      return "Parameter missing";
+    case 0x05:
+      return "Write blocked, authorization required";
+    case 0x06:
+      return "Value out of range";
+    case 0x07:
+      return "Archive type missing";
+    case 0x08:
+      return "Max archive values exceeded";
+    case 0x0B:
+      return "Unknown error - selected channel not supported (?)";
+    default:
+      return "Unknown error";
+  }
+}
+
+void PulsarMComponent::clear_rx_buffers_() {
+  int available = this->available();
+  if (available > 0) {
+    ESP_LOGVV(TAG, "Cleaning garbage from UART input buffer: %d bytes", available);
+  }
+
+  int len;
+  while (available > 0) {
+    len = std::min(available, (int) MAX_IN_BUF_SIZE);
+    this->read_array(this->buffers_.in, len);
+    available -= len;
+  }
+  memset(this->buffers_.in, 0, MAX_IN_BUF_SIZE);
+  this->buffers_.amount_in = 0;
+}
+
 }  // namespace pulsar_m
 }  // namespace esphome
