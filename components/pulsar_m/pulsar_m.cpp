@@ -479,8 +479,7 @@ void PulsarMComponent::send_frame_prepared_() {
   if (this->flow_control_pin_ != nullptr)
     this->flow_control_pin_->digital_write(false);
 
-  ESP_LOGD(TAG, "TX: %s, len: %d", format_hex_pretty(this->buffers_.out, this->buffers_.amount_out).c_str(),
-           this->buffers_.amount_out);
+  ESP_LOGD(TAG, "TX: %s", format_hex_pretty(this->buffers_.out, this->buffers_.amount_out).c_str());
   // vv
 }
 
@@ -573,8 +572,7 @@ size_t PulsarMComponent::receive_frame_(FrameStopFunction stop_fn) {
 
     if (stop_fn(this->buffers_.in, this->buffers_.amount_in)) {
       //      ESP_LOGV(TAG, "RX: %s", format_frame_pretty(this->buffers_.in, this->buffers_.amount_in).c_str());
-      ESP_LOGD(TAG, "RX: %s, len: ", format_hex_pretty(this->buffers_.in, this->buffers_.amount_in).c_str(),
-               this->buffers_.amount_in);
+      ESP_LOGD(TAG, "RX: %s", format_hex_pretty(this->buffers_.in, this->buffers_.amount_in).c_str());
       ret_val = this->buffers_.amount_in;
       this->buffers_.amount_in = 0;
       this->update_last_rx_time_();
