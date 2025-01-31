@@ -361,12 +361,26 @@ void PulsarMComponent::loop() {
       this->log_state_();
       this->set_next_state_(State::PUBLISH_INFO);
 
-      if (received_frame_size_) {
+      if (this->received_frame_size_) {
         uint8_t num = this->sensors_.size();  // one sensor per channel
-        uint16_t expected = sizeof(FrameHeader) + sizeof(double) * num + sizeof(FrameFooter);
+        size_t expectedF32 = sizeof(FrameHeader) + sizeof(float) * num + sizeof(FrameFooter);
+        size_t expectedF64 = sizeof(FrameHeader) + sizeof(double) * num + sizeof(FrameFooter);
 
-        if (received_frame_size_ != expected) {
-          ESP_LOGW(TAG, "Wrong frame size %d, expected %d", received_frame_size_, expected);
+        if (received_frame_size_ == expectedF32) {
+          float *pv = (float *) (this->buffers_.in + sizeof(FrameHeader));
+          for (auto &itv : this->values_) {
+            itv.second = *pv;
+            pv++;
+          }
+        } else if (received_frame_size_ == expectedF64) {
+          double *pv = (double *) (this->buffers_.in + sizeof(FrameHeader));
+          for (auto &itv : this->values_) {
+            itv.second = *pv;
+            pv++;
+          }
+        } else {
+
+          ESP_LOGW(TAG, "Wrong frame size %d, expected either %d or %d for Float32 and Float64 values", received_frame_size_, expectedF32, expectedF64);
 
           // clean values ? need to decide later
 
@@ -377,12 +391,6 @@ void PulsarMComponent::loop() {
           // this->abort_mission_();
 
           break;
-        }
-
-        double *pv = (double *) (this->buffers_.in + sizeof(FrameHeader));
-        for (auto &itv : this->values_) {
-          itv.second = *pv;
-          pv++;
         }
       }
     } break;
