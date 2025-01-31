@@ -191,11 +191,15 @@ void PulsarMComponent::loop() {
     } break;
 
     case State::TRY_LOCK_BUS: {
+      this->log_state_();
       if (this->try_lock_uart_session_()) {
         this->stats_.connections_tried_++;
         this->clear_rx_buffers_();
 
         this->set_next_state_(this->meter_address_ ? State::REQ_DATE_TIME : State::FIND_PULSAR);
+      } else {
+        ESP_LOGV(TAG, "RS485/UART Bus is busy, waiting ...");
+        this->set_next_state_delayed_(1000, State::TRY_LOCK_BUS);
       }
     } break;
 
@@ -431,6 +435,18 @@ void PulsarMComponent::update() {
 void PulsarMComponent::set_meter_address(uint32_t address) {
   this->meter_address_ = address;
   this->meter_address_bcd_ = this->uint32_to_bcd4(address);
+}
+
+void PulsarMComponent::set_next_state_delayed_(uint32_t ms, State next_state) {
+  if (ms == 0) {
+    set_next_state_(next_state);
+  } else {
+    ESP_LOGV(TAG, "Short delay for %u ms", ms);
+    set_next_state_(State::WAIT);
+    wait_.start_time = millis();
+    wait_.delay_ms = ms;
+    wait_.next_state = next_state;
+  }
 }
 
 void PulsarMComponent::read_reply_and_go_next_state_(ReadFunction read_fn, State next_state, uint8_t retries,
@@ -731,16 +747,16 @@ void PulsarMComponent::stats_dump() {
 
 bool PulsarMComponent::try_lock_uart_session_() {
   if (AnyObjectLocker::try_lock(this->parent_)) {
-    ESP_LOGV(TAG, "RS485 bus %p locked by %s", this->parent_, this->tag_.c_str());
+    ESP_LOGVV(TAG, "RS485 bus %p locked by %s", this->parent_, this->tag_.c_str());
     return true;
   }
-  ESP_LOGV(TAG, "RS485 bus %p locked by %s", this->parent_, this->tag_.c_str());
+  ESP_LOGVV(TAG, "RS485 bus %p is busy", this->parent_);
   return false;
 }
 
 void PulsarMComponent::unlock_uart_session_() {
   AnyObjectLocker::unlock(this->parent_);
-  ESP_LOGV(TAG, "RS485 bus %p released by %s", this->parent_, this->tag_.c_str());
+  ESP_LOGVV(TAG, "RS485 bus %p released by %s", this->parent_, this->tag_.c_str());
 }
 
 uint8_t PulsarMComponent::next_obj_id_ = 0;

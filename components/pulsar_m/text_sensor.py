@@ -1,7 +1,13 @@
 import esphome.codegen as cg
 from esphome.components import text_sensor
 import esphome.config_validation as cv
-from esphome.const import CONF_ADDRESS, CONF_DATETIME, CONF_ID
+from esphome.const import (
+    CONF_ADDRESS,
+    CONF_DATETIME,
+    CONF_ID,
+    CONF_NAME,
+    ENTITY_CATEGORY_DIAGNOSTIC,
+)
 
 from . import CONF_PULSAR_M_ID, PulsarMComponent
 
@@ -11,21 +17,28 @@ CODEOWNERS = ["@latonita"]
 CONF_SERIAL_NR = "serial_nr"
 CONF_STATE = "state"
 
-
 TEXT_SENSORS = [
     CONF_DATETIME,
     CONF_ADDRESS,
-    CONF_SERIAL_NR,
-    CONF_STATE,
 ]
 
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_PULSAR_M_ID): cv.use_id(PulsarMComponent),
-        cv.Optional(CONF_DATETIME): text_sensor.text_sensor_schema(),
-        cv.Optional(CONF_ADDRESS): text_sensor.text_sensor_schema(),
-        # cv.Optional(CONF_SERIAL_NR): text_sensor.text_sensor_schema(),
-        # cv.Optional(CONF_STATE): text_sensor.text_sensor_schema(),
+        cv.Optional(CONF_DATETIME): cv.maybe_simple_value(
+            text_sensor.text_sensor_schema(
+                icon="mdi:calendar-clock",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            key=CONF_NAME,
+        ),
+        cv.Optional(CONF_ADDRESS): cv.maybe_simple_value(
+            text_sensor.text_sensor_schema(
+                icon="mdi:identifier",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            key=CONF_NAME,
+        ),
     }
 )
 
