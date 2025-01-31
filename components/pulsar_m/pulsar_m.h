@@ -11,11 +11,11 @@ namespace pulsar_m {
 static const size_t MAX_IN_BUF_SIZE = 256;
 static const size_t MAX_OUT_BUF_SIZE = 256;
 
-enum class ChannelValueType : uint8_t {
-  UNKNOWN = 0,
-  FLOAT32 = 32,
-  FLOAT64 = 64,
-};
+// enum class ChannelValueType : uint8_t {
+//   UNKNOWN = 0,
+//   FLOAT32 = 32,
+//   FLOAT64 = 64,
+// };
 
 enum class ReadFunctionCode : uint8_t {
   Error = 0x00,

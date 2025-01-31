@@ -54,7 +54,7 @@ async def to_code(config):
 
     cg.add(var.set_receive_timeout(config[CONF_RECEIVE_TIMEOUT].total_milliseconds))
     cg.add(var.set_meter_address(config[CONF_ADDRESS]))
-    cg.add(var.set_value_type(CH_VALUE_TYPES[config[CONF_VALUE_TYPE]])
+#    cg.add(var.set_value_type(CH_VALUE_TYPES[config[CONF_VALUE_TYPE]])
 
     if CONF_FLOW_CONTROL_PIN in config:
         pin = await cg.gpio_pin_expression(config[CONF_FLOW_CONTROL_PIN])
