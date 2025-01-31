@@ -39,11 +39,11 @@ CONFIG_SCHEMA = cv.All(
     ).extend(uart.UART_DEVICE_SCHEMA),
 )
 
-FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
-    "pulsar_m",
-    require_rx=True,
-    require_tx=True,
-)
+# FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
+#     "pulsar_m",
+#     require_rx=True,
+#     require_tx=True,
+# )
 
 
 async def to_code(config):

@@ -53,7 +53,7 @@ using ReadFunction = std::function<size_t()>;  // returns number of bytes read
 
 class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
  public:
-  PulsarMComponent() = default;
+  PulsarMComponent() : tag_(generateTag()){};
 
   float get_setup_priority() const override;
 
@@ -90,8 +90,10 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   enum class State : uint8_t {
     NOT_INITIALIZED,
     IDLE,
+    TRY_LOCK_BUS,
     WAIT,
     WAITING_FOR_RESPONSE,
+    OPEN_SESSION,
     FIND_PULSAR,
     READ_PULSAR_ADDRESS,
     REQ_DATE_TIME,
@@ -163,28 +165,27 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
     uint8_t failures_{0};
 
     float crc_errors_per_session() const { return (float) crc_errors_ / connections_tried_; }
-    void dump();
   } stats_;
+  void stats_dump();
 
   uint8_t failures_before_reboot_{0};
 
-  void send_command(uint8_t *buffer, size_t len);
-  bool receive_proper_response(uint16_t expectedSize, uint16_t frameId);
+  uint16_t frame_id_{0};
+  uint16_t generate_frame_id() { return ++this->frame_id_; }
 
-  bool find_pulsar();
-  bool get_date_time();
-  bool get_channels_data();
-  bool get_meter_info();
+  static const char *error_code_to_string(uint8_t);
+  static uint32_t uint32_to_bcd4(uint32_t value);
+  static bool bcd4_to_uint32(uint32_t bcd, uint32_t *value);
+  static uint16_t crc_16_ibm(const uint8_t *buffer, size_t len);
 
-  uint16_t _request_id{0};
-  uint16_t generate_request_id() { return ++this->_request_id; }
+  bool try_lock_uart_session_();
+  void unlock_uart_session_();
 
-  const char *error_code_to_string(uint8_t);
+ private:
+  static uint8_t next_obj_id_;
+  std::string tag_;
 
-  uint32_t uint32_to_bcd4(uint32_t value);
-  bool bcd4_to_uint32(uint32_t bcd, uint32_t *value);
-
-  uint16_t crc_16_ibm(const uint8_t *buffer, size_t len);
+  static std::string generateTag();
 };
 
 }  // namespace pulsar_m
