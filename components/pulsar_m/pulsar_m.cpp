@@ -341,7 +341,7 @@ void PulsarMComponent::loop() {
       uint8_t num = this->sensors_.size();
       if (num == 0) {
         ESP_LOGD(TAG, "No sensors registered. Next");
-        this->set_next_state_(State::REQ_METER_INFO);
+        this->set_next_state_(State::PUBLISH_INFO);
         break;
       }
       // print out channel mask in hex and number of channels
@@ -360,7 +360,7 @@ void PulsarMComponent::loop() {
 
     case State::READ_CHANNELS_DATA: {
       this->log_state_();
-      this->set_next_state_(State::REQ_METER_INFO);
+      this->set_next_state_(State::PUBLISH_INFO);
 
       if (this->received_frame_size_) {
         uint8_t num = this->sensors_.size();  // one sensor per channel
@@ -396,26 +396,6 @@ void PulsarMComponent::loop() {
       }
     } break;
 
-    
-    // case State::REQ_METER_INFO: {
-    //   this->set_next_state_(State::READ_METER_INFO);
-
-    //   FrameParamReq req(this->meter_address_bcd_, 0, this->generate_frame_id());
-     
-
-    //   this->send_frame_((uint8_t *) &req, sizeof(FrameDataReq));
-    //   auto id = req.footer.id;
-    //   auto read_fn = [this, id]() { return this->receive_frame_data_(ReadFunctionCode::Parameter, id); };
-    //   this->read_reply_and_go_next_state_(read_fn, State::READ_METER_INFO, 0, false, true);
-
-    // } break;
-
-    // case State::READ_METER_INFO: {
-    //   this->set_next_state_(State::PUBLISH_INFO);
-    // } break;
-
-    case State::REQ_METER_INFO: 
-    case State::READ_METER_INFO: 
     case State::PUBLISH_INFO: {
       this->unlock_uart_session_();
       this->log_state_();

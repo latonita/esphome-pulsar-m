@@ -11,12 +11,6 @@ namespace pulsar_m {
 static const size_t MAX_IN_BUF_SIZE = 256;
 static const size_t MAX_OUT_BUF_SIZE = 256;
 
-// enum class ChannelValueType : uint8_t {
-//   UNKNOWN = 0,
-//   FLOAT32 = 32,
-//   FLOAT64 = 64,
-// };
-
 enum class ReadFunctionCode : uint8_t {
   Error = 0x00,
   Channel = 0x01,
@@ -74,7 +68,6 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   void set_flow_control_pin(GPIOPin *flow_control_pin) { this->flow_control_pin_ = flow_control_pin; }
   void set_receive_timeout(uint32_t receive_timeout) { this->receive_timeout_ms_ = receive_timeout; }
   void set_meter_address(uint32_t address);
-  // void set_channel_value_type(ChannelValueType value_type) { this->channel_value_type_ = value_type; }
 
 #ifdef USE_TEXT_SENSOR
   SUB_TEXT_SENSOR(datetime)
@@ -85,7 +78,6 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   uint32_t meter_address_{0};
   uint32_t meter_address_bcd_{0};
   uint32_t receive_timeout_ms_{500};
-  // ChannelValueType channel_value_type_{ChannelValueType::FLOAT64};
 
   SensorMap sensors_;
   uint32_t channel_mask_{0};
@@ -108,8 +100,6 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
     READ_DATE_TIME,
     REQ_CHANNELS_DATA,
     READ_CHANNELS_DATA,
-    REQ_METER_INFO,
-    READ_METER_INFO,
     PUBLISH_INFO,
   } state_{State::NOT_INITIALIZED};
   State last_reported_state_{State::NOT_INITIALIZED};
