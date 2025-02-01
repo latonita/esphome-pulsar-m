@@ -90,7 +90,7 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   SensorMap sensors_;
   uint32_t channel_mask_{0};
   ValuesMap values_;
-  char datetime_str_[20];
+  char datetime_str_[20] = "Not set";
 
   GPIOPin *flow_control_pin_{nullptr};
   std::unique_ptr<PulsarMUart> iuart_;
@@ -108,6 +108,8 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
     READ_DATE_TIME,
     REQ_CHANNELS_DATA,
     READ_CHANNELS_DATA,
+    REQ_METER_INFO,
+    READ_METER_INFO,
     PUBLISH_INFO,
   } state_{State::NOT_INITIALIZED};
   State last_reported_state_{State::NOT_INITIALIZED};

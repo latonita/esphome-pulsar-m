@@ -70,18 +70,6 @@ struct FrameDateTimeReq {
         footer{.id = id} {}
 };
 
-struct FrameParamReq {
-  FrameHeader header;
-  uint16_t param;
-  FrameFooter footer;
-
-  FrameParamReq() = delete;
-  constexpr FrameParamReq(uint32_t address_bcd, uint16_t param, uint16_t id)
-      : header{.address_bcd = address_bcd, .fn = ReadFunctionCode::Parameter, .len = sizeof(FrameParamReq)},
-        param{param},
-        footer{.id = id} {}
-};
-
 /*
 Все поля uint8_t
 YEAR – год, отсчитывается от 2000, допустимые значения [0…99].
@@ -105,6 +93,19 @@ struct FrameDateTimeResp {
   constexpr FrameDateTimeResp()
       : header{.fn = ReadFunctionCode::DateTime, .len = sizeof(FrameDateTimeResp)}, footer{} {}
 };
+
+struct FrameParamReq {
+  FrameHeader header;
+  uint16_t param_num;
+  FrameFooter footer;
+
+  FrameParamReq() = delete;
+  constexpr FrameParamReq(uint32_t address_bcd, uint16_t param, uint16_t id)
+      : header{.address_bcd = address_bcd, .fn = ReadFunctionCode::Parameter, .len = sizeof(FrameParamReq)},
+        param_num{param},
+        footer{.id = id} {}
+};
+
 #pragma pack(0)
 
 static_assert(sizeof(FrameDateTimeReq) == 10, "Wrong structure size: FrameDateTimeReq");
@@ -340,18 +341,18 @@ void PulsarMComponent::loop() {
       uint8_t num = this->sensors_.size();
       if (num == 0) {
         ESP_LOGD(TAG, "No sensors registered. Next");
-        this->set_next_state_(State::PUBLISH_INFO);
+        this->set_next_state_(State::REQ_METER_INFO);
         break;
       }
       // print out channel mask in hex and number of channels
       ESP_LOGV(TAG, "Number of channels: %d (mask: 0x%08X)", num, this->channel_mask_);
       ESP_LOGD(TAG, "Requesting channel readings from meter N %u", this->meter_address_);
 
-      FrameDataReq req_data(this->meter_address_bcd_, ReadFunctionCode::Channel, this->generate_frame_id());
-      req_data.channel_mask = this->channel_mask_;
+      FrameDataReq req(this->meter_address_bcd_, ReadFunctionCode::Channel, this->generate_frame_id());
+      req.channel_mask = this->channel_mask_;
 
-      this->send_frame_((uint8_t *) &req_data, sizeof(FrameDataReq));
-      auto id = req_data.footer.id;
+      this->send_frame_((uint8_t *) &req, sizeof(FrameDataReq));
+      auto id = req.footer.id;
       auto read_fn = [this, id]() { return this->receive_frame_data_(ReadFunctionCode::Channel, id); };
       this->read_reply_and_go_next_state_(read_fn, State::READ_CHANNELS_DATA, 0, false, true);
 
@@ -359,7 +360,7 @@ void PulsarMComponent::loop() {
 
     case State::READ_CHANNELS_DATA: {
       this->log_state_();
-      this->set_next_state_(State::PUBLISH_INFO);
+      this->set_next_state_(State::REQ_METER_INFO);
 
       if (this->received_frame_size_) {
         uint8_t num = this->sensors_.size();  // one sensor per channel
@@ -379,8 +380,8 @@ void PulsarMComponent::loop() {
             pv++;
           }
         } else {
-
-          ESP_LOGW(TAG, "Wrong frame size %d, expected either %d or %d for Float32 and Float64 values", received_frame_size_, expectedF32, expectedF64);
+          ESP_LOGW(TAG, "Wrong frame size %d, expected either %d or %d for Float32 and Float64 values",
+                   received_frame_size_, expectedF32, expectedF64);
 
           // clean values ? need to decide later
 
@@ -395,6 +396,26 @@ void PulsarMComponent::loop() {
       }
     } break;
 
+    
+    // case State::REQ_METER_INFO: {
+    //   this->set_next_state_(State::READ_METER_INFO);
+
+    //   FrameParamReq req(this->meter_address_bcd_, 0, this->generate_frame_id());
+     
+
+    //   this->send_frame_((uint8_t *) &req, sizeof(FrameDataReq));
+    //   auto id = req.footer.id;
+    //   auto read_fn = [this, id]() { return this->receive_frame_data_(ReadFunctionCode::Parameter, id); };
+    //   this->read_reply_and_go_next_state_(read_fn, State::READ_METER_INFO, 0, false, true);
+
+    // } break;
+
+    // case State::READ_METER_INFO: {
+    //   this->set_next_state_(State::PUBLISH_INFO);
+    // } break;
+
+    case State::REQ_METER_INFO: 
+    case State::READ_METER_INFO: 
     case State::PUBLISH_INFO: {
       this->unlock_uart_session_();
       this->log_state_();
@@ -422,7 +443,7 @@ void PulsarMComponent::loop() {
         this->address_text_sensor_->publish_state(to_string(this->meter_address_));
       }
 #endif
-      this->stats_dump();
+      //this->stats_dump();
     } break;
 
     default:
@@ -500,10 +521,12 @@ void PulsarMComponent::send_frame_prepared_() {
 
 size_t PulsarMComponent::receive_frame_discovery_() {
   auto stop_fn = [this](const uint8_t *data, size_t len) {
-    if (len != sizeof(FrameDiscoveryResp))
+    if (len != sizeof(FrameDiscoveryResp)) {
       return false;
+    }
 
     if (this->crc_16_ibm(data, len) != 0) {
+      ESP_LOGD(TAG, "Discovery Stop_Fn CRC is wrong. RX: %s", format_hex_pretty(data, len).c_str());
       return false;
     }
 
