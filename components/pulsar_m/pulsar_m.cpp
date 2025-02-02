@@ -1,9 +1,10 @@
+//#include <bitset>
+#include <cstdint>
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
-#include "pulsar_m.h"
-#include <bitset>
-#include <cstdint>
+#include "esphome/core/time.h"
 #include "object_locker.h"
+#include "pulsar_m.h"
 
 namespace esphome {
 namespace pulsar_m {
@@ -28,7 +29,7 @@ static constexpr uint8_t BOOT_WAIT_S = 10;  // avoid communications until proper
 
 struct FrameHeader {
   uint32_t address_bcd;
-  ReadFunctionCode fn;
+  FunctionCode fn;
   uint8_t len;
 };
 
@@ -41,7 +42,7 @@ struct FrameDiscoveryReq {
   FrameHeader header;
   uint8_t zero8{0};
   FrameFooter footer{0, 0};
-  constexpr FrameDiscoveryReq() : header{.address_bcd = 0xF00F0FF0, .fn = ReadFunctionCode::Error} {};
+  constexpr FrameDiscoveryReq() : header{.address_bcd = 0xF00F0FF0, .fn = FunctionCode::Error} {};
 };
 
 struct FrameDiscoveryResp {
@@ -56,7 +57,7 @@ struct FrameDataReq {
   FrameFooter footer;
 
   FrameDataReq() = delete;
-  constexpr FrameDataReq(uint32_t address_bcd, ReadFunctionCode fn_code, uint16_t id)
+  constexpr FrameDataReq(uint32_t address_bcd, FunctionCode fn_code, uint16_t id)
       : header{.address_bcd = address_bcd, .fn = fn_code, .len = sizeof(FrameDataReq)}, footer{.id = id} {}
 };
 
@@ -66,7 +67,7 @@ struct FrameDateTimeReq {
 
   FrameDateTimeReq() = delete;
   constexpr FrameDateTimeReq(uint32_t address_bcd, uint16_t id)
-      : header{.address_bcd = address_bcd, .fn = ReadFunctionCode::DateTime, .len = sizeof(FrameDateTimeReq)},
+      : header{.address_bcd = address_bcd, .fn = FunctionCode::DateTime, .len = sizeof(FrameDateTimeReq)},
         footer{.id = id} {}
 };
 
@@ -90,8 +91,7 @@ struct FrameDateTimeResp {
   uint8_t minute{0xff};
   uint8_t second{0xff};
   FrameFooter footer;
-  constexpr FrameDateTimeResp()
-      : header{.fn = ReadFunctionCode::DateTime, .len = sizeof(FrameDateTimeResp)}, footer{} {}
+  constexpr FrameDateTimeResp() : header{.fn = FunctionCode::DateTime, .len = sizeof(FrameDateTimeResp)}, footer{} {}
 };
 
 struct FrameParamReq {
@@ -101,7 +101,7 @@ struct FrameParamReq {
 
   FrameParamReq() = delete;
   constexpr FrameParamReq(uint32_t address_bcd, uint16_t param, uint16_t id)
-      : header{.address_bcd = address_bcd, .fn = ReadFunctionCode::Parameter, .len = sizeof(FrameParamReq)},
+      : header{.address_bcd = address_bcd, .fn = FunctionCode::Parameter, .len = sizeof(FrameParamReq)},
         param_num{param},
         footer{.id = id} {}
 };
@@ -150,7 +150,7 @@ void PulsarMComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Meter address: %u", this->meter_address_);
 #ifdef USE_SENSOR
   for (const auto &it : this->sensors_) {
-    ESP_LOGCONFIG(TAG, "  Sensor", it.second);
+    LOG_SENSOR("  ", "  Sensor", it.second);
   }
 #endif
 }
@@ -196,10 +196,15 @@ void PulsarMComponent::loop() {
       if (this->try_lock_uart_session_()) {
         this->stats_.connections_tried_++;
         this->clear_rx_buffers_();
-
-        this->set_next_state_(this->meter_address_ ? State::REQ_DATE_TIME : State::FIND_PULSAR);
+        if (this->meter_address_ == 0) {
+          this->set_next_state_(State::FIND_PULSAR);
+        } else if (this->time_to_set_ != 0) {
+          this->set_next_state_(State::SET_DATE_TIME);
+        } else {
+          this->set_next_state_(State::REQ_DATE_TIME);
+        }
       } else {
-        ESP_LOGV(TAG, "RS485/UART Bus is busy, waiting ...");
+        ESP_LOGV(TAG, "UART Bus is busy, waiting ...");
         this->set_next_state_delayed_(1000, State::TRY_LOCK_BUS);
       }
     } break;
@@ -220,11 +225,11 @@ void PulsarMComponent::loop() {
         crc_is_ok = (0x0000 == this->crc_16_ibm(this->buffers_.in, received_frame_size_));
       }
 
-      // special case for the unexpected frame with error. it has proper CRC, it has fn=0, len=11
-      // special case if we are in FindPulsar mode - double check
+      // special case for the unexpected frame with error. it has proper CRC, it
+      // has fn=0, len=11 special case if we are in FindPulsar mode - double check
 
       // happy path
-      if (received_frame_size_ > 0 && crc_is_ok) {
+      if (this->received_frame_size_ > 0 && crc_is_ok) {
         this->set_next_state_(reading_state_.next_state);
         this->update_last_rx_time_();
         this->stats_.crc_errors_ += reading_state_.err_crc;
@@ -238,7 +243,7 @@ void PulsarMComponent::loop() {
       if (crc_is_ok && !this->check_rx_timeout_()) {
         return;
       }
-      if (received_frame_size_ == 0) {
+      if (this->received_frame_size_ == 0) {
         this->reading_state_.err_invalid_frames++;
         ESP_LOGW(TAG, "RX timeout");
       } else if (!crc_is_ok) {
@@ -292,10 +297,63 @@ void PulsarMComponent::loop() {
 
     case State::READ_PULSAR_ADDRESS: {
       this->log_state_();
-      if (received_frame_size_) {
+      if (this->received_frame_size_) {
         this->update_last_rx_time_();
         this->set_next_state_(State::REQ_DATE_TIME);
       }
+    } break;
+
+    case State::SET_DATE_TIME: {
+      if (this->time_to_set_ == 0) {
+        this->set_next_state_(State::REQ_DATE_TIME);
+        break;
+      }
+
+      this->log_state_();
+
+      FrameDateTimeResp req;
+      req.header.address_bcd = this->meter_address_bcd_;
+      req.header.fn = FunctionCode::SetDateTime;
+      req.header.len = sizeof(FrameDateTimeResp);
+      auto id = req.footer.id = this->generate_frame_id();
+
+      uint32_t ms_since_asked = millis() - this->time_to_set_requested_at_ms_;
+      auto time = ESPTime::from_epoch_local(this->time_to_set_ + ms_since_asked / 1000);  // Convert to local time
+
+      this->time_to_set_ = 0;
+      this->time_to_set_requested_at_ms_ = 0;
+
+      req.year = time.year - 2000;
+      req.month = time.month;
+      req.day = time.day_of_month;
+      req.hour = time.hour;
+      req.minute = time.minute;
+      req.second = time.second;
+      ESP_LOGD(TAG, "Adjusting requested time by +%d seconds", ms_since_asked / 1000);
+      ESP_LOGD(TAG, "Setting time to: %04d-%02d-%02d %02d:%02d:%02d", time.year, time.month, time.day_of_month, time.hour,
+               time.minute, time.second);
+
+      this->send_frame_((uint8_t *) &req, sizeof(FrameDateTimeResp));
+
+      auto read_fn = [this, id]() { return this->receive_frame_data_(FunctionCode::SetDateTime, id); };
+
+      this->read_reply_and_go_next_state_(read_fn, State::READ_SET_DATE_TIME, 0, false, true);
+
+    } break;
+
+    case State::READ_SET_DATE_TIME: {
+      this->log_state_();
+      this->set_next_state_(State::REQ_DATE_TIME);
+
+      if (this->received_frame_size_) {
+        uint8_t result = this->buffers_.in[sizeof(FrameHeader)];
+        if (result == 1) {
+          ESP_LOGD(TAG, "Date/time set successfully");
+        } else {
+          ESP_LOGW(TAG, "Date/time set failed");
+        }
+      }
+
     } break;
 
     case State::REQ_DATE_TIME: {
@@ -307,7 +365,7 @@ void PulsarMComponent::loop() {
       this->send_frame_((uint8_t *) &req, sizeof(FrameDateTimeReq));
 
       ESP_LOGD(TAG, "Requesting date/time from meter # %u, frame id = %d", this->meter_address_, id);
-      auto read_fn = [this, id]() { return this->receive_frame_data_(ReadFunctionCode::DateTime, id); };
+      auto read_fn = [this, id]() { return this->receive_frame_data_(FunctionCode::DateTime, id); };
 
       this->read_reply_and_go_next_state_(read_fn, State::READ_DATE_TIME, 0, false, true);
 
@@ -316,7 +374,7 @@ void PulsarMComponent::loop() {
     case State::READ_DATE_TIME: {
       this->log_state_();
       this->set_next_state_(State::REQ_CHANNELS_DATA);
-      if (received_frame_size_ == 0) {
+      if (this->received_frame_size_ == 0) {
         ESP_LOGW(TAG, "No date/time received");
         break;
       }
@@ -348,12 +406,12 @@ void PulsarMComponent::loop() {
       ESP_LOGV(TAG, "Number of channels: %d (mask: 0x%08X)", num, this->channel_mask_);
       ESP_LOGD(TAG, "Requesting channel readings from meter N %u", this->meter_address_);
 
-      FrameDataReq req(this->meter_address_bcd_, ReadFunctionCode::Channel, this->generate_frame_id());
+      FrameDataReq req(this->meter_address_bcd_, FunctionCode::Channel, this->generate_frame_id());
       req.channel_mask = this->channel_mask_;
 
       this->send_frame_((uint8_t *) &req, sizeof(FrameDataReq));
       auto id = req.footer.id;
-      auto read_fn = [this, id]() { return this->receive_frame_data_(ReadFunctionCode::Channel, id); };
+      auto read_fn = [this, id]() { return this->receive_frame_data_(FunctionCode::Channel, id); };
       this->read_reply_and_go_next_state_(read_fn, State::READ_CHANNELS_DATA, 0, false, true);
 
     } break;
@@ -367,20 +425,22 @@ void PulsarMComponent::loop() {
         size_t expectedF32 = sizeof(FrameHeader) + sizeof(float) * num + sizeof(FrameFooter);
         size_t expectedF64 = sizeof(FrameHeader) + sizeof(double) * num + sizeof(FrameFooter);
 
-        if (received_frame_size_ == expectedF32) {
+        if (this->received_frame_size_ == expectedF32) {
           float *pv = (float *) (this->buffers_.in + sizeof(FrameHeader));
           for (auto &itv : this->values_) {
             itv.second = *pv;
             pv++;
           }
-        } else if (received_frame_size_ == expectedF64) {
+        } else if (this->received_frame_size_ == expectedF64) {
           double *pv = (double *) (this->buffers_.in + sizeof(FrameHeader));
           for (auto &itv : this->values_) {
             itv.second = *pv;
             pv++;
           }
         } else {
-          ESP_LOGW(TAG, "Wrong frame size %d, expected either %d or %d for Float32 and Float64 values",
+          ESP_LOGW(TAG,
+                   "Wrong frame size %d, expected either %d or %d for Float32 "
+                   "and Float64 values",
                    received_frame_size_, expectedF32, expectedF64);
 
           // clean values ? need to decide later
@@ -423,7 +483,7 @@ void PulsarMComponent::loop() {
         this->address_text_sensor_->publish_state(to_string(this->meter_address_));
       }
 #endif
-      //this->stats_dump();
+      // this->stats_dump();
     } break;
 
     default:
@@ -444,6 +504,24 @@ void PulsarMComponent::update() {
 void PulsarMComponent::set_meter_address(uint32_t address) {
   this->meter_address_ = address;
   this->meter_address_bcd_ = this->uint32_to_bcd4(address);
+}
+
+void PulsarMComponent::set_device_time(uint32_t timestamp) {
+  ESP_LOGD(TAG, "set_device_time: %u", timestamp);
+  this->time_to_set_ = timestamp;
+  this->time_to_set_requested_at_ms_ = millis();
+
+  auto time = ESPTime::from_epoch_local(timestamp);  // Convert to local time
+
+  int year = time.year;
+  int month = time.month;
+  int day = time.day_of_month;
+  int hour = time.hour;
+  int minute = time.minute;
+  int second = time.second;
+
+  ESP_LOGD(TAG, "Time set queued: %04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, minute, second);
+  // this->update();
 }
 
 void PulsarMComponent::set_next_state_delayed_(uint32_t ms, State next_state) {
@@ -526,7 +604,7 @@ size_t PulsarMComponent::receive_frame_discovery_() {
   return this->receive_frame_(stop_fn);
 }
 
-size_t PulsarMComponent::receive_frame_data_(ReadFunctionCode fn_code, uint16_t id) {
+size_t PulsarMComponent::receive_frame_data_(FunctionCode fn_code, uint16_t id) {
   auto stop_fn = [this, fn_code, id](const uint8_t *data, size_t len) {
     if (len < sizeof(FrameHeader) + sizeof(FrameFooter))
       return false;
@@ -538,7 +616,7 @@ size_t PulsarMComponent::receive_frame_data_(ReadFunctionCode fn_code, uint16_t 
     FrameHeader *header = (FrameHeader *) data;
     FrameFooter *footer = (FrameFooter *) (data + len - sizeof(FrameFooter));
 
-    if (len == 11 && header->fn == ReadFunctionCode::Error) {
+    if (len == 11 && header->fn == FunctionCode::Error) {
       ESP_LOGW(TAG, "Error frame received: %s", error_code_to_string(data[sizeof(FrameHeader)]));
       return false;
     }
@@ -619,8 +697,8 @@ void PulsarMComponent::clear_rx_buffers_() {
 }
 
 //----------------------------------------------------------------------------
-// convert uint32 to 4-byte BCD, each byte is 2 decimal digits, 8 digits in total
-// example: input = 04026591, output = 0x04 0x02 0x65 0x91
+// convert uint32 to 4-byte BCD, each byte is 2 decimal digits, 8 digits in
+// total example: input = 04026591, output = 0x04 0x02 0x65 0x91
 //----------------------------------------------------------------------------
 uint32_t PulsarMComponent::uint32_to_bcd4(uint32_t value) {
   uint32_t result = 0;
@@ -633,8 +711,8 @@ uint32_t PulsarMComponent::uint32_to_bcd4(uint32_t value) {
 }
 
 //----------------------------------------------------------------------------
-// convert 4-byte BCD to uint32, each byte is 2 decimal digits, 8 digits in total
-// example: input = 0x04 0x02 0x65 0x91, output = 04026591
+// convert 4-byte BCD to uint32, each byte is 2 decimal digits, 8 digits in
+// total example: input = 0x04 0x02 0x65 0x91, output = 04026591
 //----------------------------------------------------------------------------
 bool PulsarMComponent::bcd4_to_uint32(uint32_t bcd, uint32_t *value) {
   uint32_t result = 0;
@@ -718,6 +796,10 @@ const char *PulsarMComponent::state_to_string(State state) {
       return "FIND_PULSAR";
     case State::READ_PULSAR_ADDRESS:
       return "READ_PULSAR_ADDRESS";
+    case State::SET_DATE_TIME:
+      return "SET_DATE_TIME";
+    case State::READ_SET_DATE_TIME:
+      return "READ_SET_DATE_TIME";
     case State::REQ_DATE_TIME:
       return "REQ_DATE_TIME";
     case State::READ_DATE_TIME:
@@ -738,7 +820,7 @@ void PulsarMComponent::log_state_(State *next_state) {
     if (next_state == nullptr) {
       ESP_LOGV(TAG, "State::%s", this->state_to_string(this->state_));
     } else {
-      ESP_LOGV(TAG, "State::%s before %s", this->state_to_string(this->state_), this->state_to_string(*next_state));
+      ESP_LOGV(TAG, "State::%s -> %s", this->state_to_string(this->state_), this->state_to_string(*next_state));
     }
     this->last_reported_state_ = this->state_;
   }
@@ -758,16 +840,16 @@ void PulsarMComponent::stats_dump() {
 
 bool PulsarMComponent::try_lock_uart_session_() {
   if (AnyObjectLocker::try_lock(this->parent_)) {
-    ESP_LOGVV(TAG, "RS485 bus %p locked by %s", this->parent_, this->tag_.c_str());
+    ESP_LOGVV(TAG, "UART bus %p locked by %s", this->parent_, this->tag_.c_str());
     return true;
   }
-  ESP_LOGVV(TAG, "RS485 bus %p is busy", this->parent_);
+  ESP_LOGVV(TAG, "UART bus %p is busy", this->parent_);
   return false;
 }
 
 void PulsarMComponent::unlock_uart_session_() {
   AnyObjectLocker::unlock(this->parent_);
-  ESP_LOGVV(TAG, "RS485 bus %p released by %s", this->parent_, this->tag_.c_str());
+  ESP_LOGVV(TAG, "UART bus %p released by %s", this->parent_, this->tag_.c_str());
 }
 
 uint8_t PulsarMComponent::next_obj_id_ = 0;

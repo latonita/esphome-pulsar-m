@@ -11,9 +11,9 @@
 - Чтение даты и времени
 - Работа со счетчиком по указанному адресу либо поиск 
 - Работа с несколькими счетчиками на одной или разных шинах (необходимо *обязательно* указать адрес каждого прибора)
+- Синхронизация времени
 
 ## На будущее можно реализовать
-- Синхронизация времени
 - Запись текущих значений
 - Чтение/запись весов импульсов
 - .. предлагайте ваши варианты
@@ -51,9 +51,10 @@ uart:
     parity: NONE
 
 pulsar_m:
-  uart_id: uart_1
-  receive_timeout: 500ms
-  address: 12345678  # опционально. лучше указать, метод поиска может отличаться от версии к версии
+  - id: pulsar_1
+    uart_id: uart_1
+    receive_timeout: 500ms
+    address: 12345678  # опционально. лучше указать, метод поиска может отличаться от версии к версии
   # flow_control_pin: GPIO21 # если требуется для модуля rs485
 
 text_sensor:
@@ -77,6 +78,25 @@ sensor:
     accuracy_decimals: 1
     device_class: water
     state_class: total_increasing
+
+# Синхронизация времени
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "MSK-3"
+
+interval:
+  - interval: 24h
+    then:
+      - lambda: |-
+          if (id(sntp_time).now().is_valid()) {
+            auto ts = id(sntp_time).now();
+            id(pulsar_1).set_device_time(ts.timestamp);
+          } else {
+            ESP_LOGW("pulsar_m", "Time not valid yet!");
+          }
+
 
 ```
 </details>
@@ -193,6 +213,29 @@ sensor:
     accuracy_decimals: 1
     device_class: gas
     state_class: total_increasing
+
+
+
+# Синхронизация времени
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "MSK-3"
+
+interval:
+  - interval: 24h
+    then:
+      - lambda: |-
+          if (id(sntp_time).now().is_valid()) {
+            auto ts = id(sntp_time).now();
+            id(pulsar_1).set_device_time(ts.timestamp);
+            id(pulsar_2).set_device_time(ts.timestamp);
+            id(pulsar_3).set_device_time(ts.timestamp);
+          } else {
+            ESP_LOGW("pulsar_m", "Time not valid yet!");
+          }
+
 
 
 ```

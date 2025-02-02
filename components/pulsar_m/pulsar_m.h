@@ -11,10 +11,11 @@ namespace pulsar_m {
 static const size_t MAX_IN_BUF_SIZE = 256;
 static const size_t MAX_OUT_BUF_SIZE = 256;
 
-enum class ReadFunctionCode : uint8_t {
+enum class FunctionCode : uint8_t {
   Error = 0x00,
   Channel = 0x01,
   DateTime = 0x04,
+  SetDateTime = 0x05,
   ChannelWeight = 0x07,
   Parameter = 0x0A,
 };
@@ -69,6 +70,8 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   void set_receive_timeout(uint32_t receive_timeout) { this->receive_timeout_ms_ = receive_timeout; }
   void set_meter_address(uint32_t address);
 
+  void set_device_time(uint32_t timestamp);  
+
 #ifdef USE_TEXT_SENSOR
   SUB_TEXT_SENSOR(datetime)
   SUB_TEXT_SENSOR(address)
@@ -82,7 +85,10 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   SensorMap sensors_;
   uint32_t channel_mask_{0};
   ValuesMap values_;
+  
   char datetime_str_[20] = "Not set";
+  uint32_t time_to_set_{0};
+  uint32_t time_to_set_requested_at_ms_{0};
 
   GPIOPin *flow_control_pin_{nullptr};
   std::unique_ptr<PulsarMUart> iuart_;
@@ -96,6 +102,8 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
     OPEN_SESSION,
     FIND_PULSAR,
     READ_PULSAR_ADDRESS,
+    SET_DATE_TIME,
+    READ_SET_DATE_TIME,
     REQ_DATE_TIME,
     READ_DATE_TIME,
     REQ_CHANNELS_DATA,
@@ -145,7 +153,7 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
 
   size_t receive_frame_(FrameStopFunction stop_fn);
   size_t receive_frame_discovery_();
-  size_t receive_frame_data_(ReadFunctionCode fn_code, uint16_t frame_id);
+  size_t receive_frame_data_(FunctionCode fn_code, uint16_t frame_id);
 
   inline void update_last_rx_time_() { this->last_rx_time_ = millis(); }
   bool check_wait_timeout_() { return millis() - wait_.start_time >= wait_.delay_ms; }
