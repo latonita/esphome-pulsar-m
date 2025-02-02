@@ -42,7 +42,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(
                 CONF_RECEIVE_TIMEOUT, default="500ms"
             ): cv.positive_time_period_milliseconds,
-            cv.Optional(CONF_UPDATE_INTERVAL, default="30s"): cv.update_interval,
+            cv.Optional(CONF_UPDATE_INTERVAL, default="60s"): cv.update_interval,
             cv.Optional(CONF_VALUE_TYPE, default="float"): cv.enum(VALUE_TYPES, upper=True),
         }
     ).extend(uart.UART_DEVICE_SCHEMA),

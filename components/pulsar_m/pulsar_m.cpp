@@ -406,7 +406,7 @@ void PulsarMComponent::loop() {
       }
       // print out channel mask in hex and number of channels
       ESP_LOGV(TAG, "Number of channels: %d (mask: 0x%08X)", num, this->channel_mask_);
-      ESP_LOGD(TAG, "Requesting channel readings from meter N %u", this->meter_address_);
+      ESP_LOGD(TAG, "Requesting channel readings");
 
       FrameDataReq req(this->meter_address_bcd_, FunctionCode::Channel, this->generate_frame_id());
       req.channel_mask = this->channel_mask_;
