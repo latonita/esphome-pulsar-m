@@ -20,6 +20,14 @@ AUTO_LOAD = ["sensor", "text_sensor"]
 CONF_PULSAR_M_ID = "pulsar_m_id"
 MAX_CHANNELS = 20
 
+CONF_VALUE_TYPE = "value_type"
+
+VALUE_TYPES = {
+     "INTEGER":1, 
+     "FLOAT":2
+}
+
+
 pulsar_m_ns = cg.esphome_ns.namespace("esphome::pulsar_m")
 PulsarMComponent = pulsar_m_ns.class_(
     "PulsarMComponent", cg.PollingComponent, uart.UARTDevice
@@ -35,6 +43,7 @@ CONFIG_SCHEMA = cv.All(
                 CONF_RECEIVE_TIMEOUT, default="500ms"
             ): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_UPDATE_INTERVAL, default="30s"): cv.update_interval,
+            cv.Optional(CONF_VALUE_TYPE, default="float"): cv.enum(VALUE_TYPES, upper=True),
         }
     ).extend(uart.UART_DEVICE_SCHEMA),
 )
@@ -46,6 +55,9 @@ async def to_code(config):
 
     cg.add(var.set_receive_timeout(config[CONF_RECEIVE_TIMEOUT].total_milliseconds))
     cg.add(var.set_meter_address(config[CONF_ADDRESS]))
+
+    # todo: make proper type selection if needed
+    cg.add(var.set_is_integer(config[CONF_VALUE_TYPE] == "INTEGER"))
 
     if CONF_FLOW_CONTROL_PIN in config:
         pin = await cg.gpio_pin_expression(config[CONF_FLOW_CONTROL_PIN])

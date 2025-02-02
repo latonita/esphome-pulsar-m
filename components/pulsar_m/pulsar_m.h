@@ -69,8 +69,9 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   void set_flow_control_pin(GPIOPin *flow_control_pin) { this->flow_control_pin_ = flow_control_pin; }
   void set_receive_timeout(uint32_t receive_timeout) { this->receive_timeout_ms_ = receive_timeout; }
   void set_meter_address(uint32_t address);
+  void set_is_integer(bool is_integer) { this->is_integer_ = is_integer; }
 
-  void set_device_time(uint32_t timestamp);  
+  void set_device_time(uint32_t timestamp);
 
 #ifdef USE_TEXT_SENSOR
   SUB_TEXT_SENSOR(datetime)
@@ -81,11 +82,12 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   uint32_t meter_address_{0};
   uint32_t meter_address_bcd_{0};
   uint32_t receive_timeout_ms_{500};
-
+  bool is_integer_{false};
+  
   SensorMap sensors_;
   uint32_t channel_mask_{0};
   ValuesMap values_;
-  
+
   char datetime_str_[20] = "Not set";
   uint32_t time_to_set_{0};
   uint32_t time_to_set_requested_at_ms_{0};

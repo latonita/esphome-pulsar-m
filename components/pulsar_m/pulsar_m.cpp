@@ -115,6 +115,8 @@ static_assert(sizeof(FrameDateTimeResp) == 16, "Wrong structure size: FrameDateT
 static_assert(sizeof(double) == 8, "double size is not 8 bytes.");
 static_assert(sizeof(float) == 4, "float size is not 4 bytes.");
 
+static constexpr size_t FRAME_OVERHEAD = sizeof(FrameHeader) + sizeof(FrameFooter);
+
 float PulsarMComponent::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
 
 void PulsarMComponent::setup() {
@@ -330,8 +332,8 @@ void PulsarMComponent::loop() {
       req.minute = time.minute;
       req.second = time.second;
       ESP_LOGD(TAG, "Adjusting requested time by +%d seconds", ms_since_asked / 1000);
-      ESP_LOGD(TAG, "Setting time to: %04d-%02d-%02d %02d:%02d:%02d", time.year, time.month, time.day_of_month, time.hour,
-               time.minute, time.second);
+      ESP_LOGD(TAG, "Setting time to: %04d-%02d-%02d %02d:%02d:%02d", time.year, time.month, time.day_of_month,
+               time.hour, time.minute, time.second);
 
       this->send_frame_((uint8_t *) &req, sizeof(FrameDateTimeResp));
 
@@ -422,26 +424,45 @@ void PulsarMComponent::loop() {
 
       if (this->received_frame_size_) {
         uint8_t num = this->sensors_.size();  // one sensor per channel
-        size_t expectedF32 = sizeof(FrameHeader) + sizeof(float) * num + sizeof(FrameFooter);
-        size_t expectedF64 = sizeof(FrameHeader) + sizeof(double) * num + sizeof(FrameFooter);
+        size_t expected16 = FRAME_OVERHEAD + num * sizeof(uint16_t);
+        size_t expected32 = FRAME_OVERHEAD + num * sizeof(float);
+        size_t expected64 = FRAME_OVERHEAD + num * sizeof(double);
 
-        if (this->received_frame_size_ == expectedF32) {
+        if (this->received_frame_size_ == expected16) {
+          // this have to be uint16_t
+          uint16_t *pv = (uint16_t *) (this->buffers_.in + sizeof(FrameHeader));
+          for (auto &itv : this->values_) {
+            itv.second = *pv;
+            pv++;
+          }
+        } else if (this->received_frame_size_ == expected32 && this->is_integer_) {
+          uint32_t *pv = (uint32_t *) (this->buffers_.in + sizeof(FrameHeader));
+          ESP_LOGD(TAG, "val uint32 %ul", *pv);
+          for (auto &itv : this->values_) {
+            itv.second = (double)*pv;
+            pv++;
+          }
+        } else if (this->received_frame_size_ == expected32 && !this->is_integer_) {
           float *pv = (float *) (this->buffers_.in + sizeof(FrameHeader));
           for (auto &itv : this->values_) {
             itv.second = *pv;
             pv++;
           }
-        } else if (this->received_frame_size_ == expectedF64) {
+        } else if (this->received_frame_size_ == expected64 && this->is_integer_) {
+          uint64_t *pv = (uint64_t *) (this->buffers_.in + sizeof(FrameHeader));
+          for (auto &itv : this->values_) {
+            itv.second = (double)*pv;
+            pv++;
+          }
+        } else if (this->received_frame_size_ == expected64 && !this->is_integer_) {
           double *pv = (double *) (this->buffers_.in + sizeof(FrameHeader));
           for (auto &itv : this->values_) {
             itv.second = *pv;
             pv++;
           }
         } else {
-          ESP_LOGW(TAG,
-                   "Wrong frame size %d, expected either %d or %d for Float32 "
-                   "and Float64 values",
-                   received_frame_size_, expectedF32, expectedF64);
+          ESP_LOGW(TAG, "Wrong frame size %d, expected either %d, %d, or %d for 16, 32, or 64 bit values",
+                   received_frame_size_, expected16, expected32, expected64);
 
           // clean values ? need to decide later
 
@@ -473,6 +494,9 @@ void PulsarMComponent::loop() {
         auto value = its.second;
         if (value.has_value()) {
           this->sensors_[channel]->publish_state(*value);
+        } else {
+          ESP_LOGW(TAG, "Channel %d: no value", channel);
+
         }
       }
 #ifdef USE_TEXT_SENSOR
