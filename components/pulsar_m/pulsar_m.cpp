@@ -366,7 +366,7 @@ void PulsarMComponent::loop() {
 
       this->send_frame_((uint8_t *) &req, sizeof(FrameDateTimeReq));
 
-      ESP_LOGD(TAG, "Requesting date/time from meter # %u, frame id = %d", this->meter_address_, id);
+      ESP_LOGD(TAG, "Requesting date/time");
       auto read_fn = [this, id]() { return this->receive_frame_data_(FunctionCode::DateTime, id); };
 
       this->read_reply_and_go_next_state_(read_fn, State::READ_DATE_TIME, 0, false, true);
@@ -421,6 +421,7 @@ void PulsarMComponent::loop() {
     case State::READ_CHANNELS_DATA: {
       this->log_state_();
       this->set_next_state_(State::PUBLISH_INFO);
+      //      this->param_nr_ = 0;
 
       if (this->received_frame_size_) {
         uint8_t num = this->sensors_.size();  // one sensor per channel
@@ -437,9 +438,8 @@ void PulsarMComponent::loop() {
           }
         } else if (this->received_frame_size_ == expected32 && this->is_integer_) {
           uint32_t *pv = (uint32_t *) (this->buffers_.in + sizeof(FrameHeader));
-          ESP_LOGD(TAG, "val uint32 %ul", *pv);
           for (auto &itv : this->values_) {
-            itv.second = (double)*pv;
+            itv.second = (double) *pv;
             pv++;
           }
         } else if (this->received_frame_size_ == expected32 && !this->is_integer_) {
@@ -451,7 +451,7 @@ void PulsarMComponent::loop() {
         } else if (this->received_frame_size_ == expected64 && this->is_integer_) {
           uint64_t *pv = (uint64_t *) (this->buffers_.in + sizeof(FrameHeader));
           for (auto &itv : this->values_) {
-            itv.second = (double)*pv;
+            itv.second = (double) *pv;
             pv++;
           }
         } else if (this->received_frame_size_ == expected64 && !this->is_integer_) {
@@ -477,6 +477,35 @@ void PulsarMComponent::loop() {
       }
     } break;
 
+      // case State::REQ_PARAM: {
+      //   this->log_state_();
+
+      //   if (++this->param_nr_ >= 8) {
+      //     this->param_nr_ = 0;
+      //     this->set_next_state_(State::PUBLISH_INFO);
+      //     break;
+      //   }
+
+      //   FrameParamReq req(this->meter_address_bcd_, this->param_nr_, this->generate_frame_id());
+      //   this->send_frame_((uint8_t *) &req, sizeof(FrameParamReq));
+      //   auto id = req.footer.id;
+      //   auto read_fn = [this, id]() { return this->receive_frame_data_(FunctionCode::Parameter, id); };
+      //   this->read_reply_and_go_next_state_(read_fn, State::READ_PARAM, 0, false, true);
+
+      // } break;
+
+      // case State::READ_PARAM: {
+      //   this->log_state_();
+      //   this->set_next_state_(State::REQ_PARAM);
+
+      //   if (this->received_frame_size_ > FRAME_OVERHEAD) {
+      //     auto len = received_frame_size_ - FRAME_OVERHEAD;
+
+      //     ESP_LOGD(TAG, "Param %d: %s", this->param_nr_,
+      //              format_hex_pretty(this->buffers_.in + sizeof(FrameHeader), len).c_str());
+      //   }
+      // } break;
+
     case State::PUBLISH_INFO: {
       this->unlock_uart_session_();
       this->log_state_();
@@ -496,7 +525,6 @@ void PulsarMComponent::loop() {
           this->sensors_[channel]->publish_state(*value);
         } else {
           ESP_LOGW(TAG, "Channel %d: no value", channel);
-
         }
       }
 #ifdef USE_TEXT_SENSOR

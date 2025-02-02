@@ -83,7 +83,7 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   uint32_t meter_address_bcd_{0};
   uint32_t receive_timeout_ms_{500};
   bool is_integer_{false};
-  
+
   SensorMap sensors_;
   uint32_t channel_mask_{0};
   ValuesMap values_;
@@ -110,14 +110,19 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
     READ_DATE_TIME,
     REQ_CHANNELS_DATA,
     READ_CHANNELS_DATA,
+    // REQ_PARAM,
+    // READ_PARAM,
     PUBLISH_INFO,
   } state_{State::NOT_INITIALIZED};
   State last_reported_state_{State::NOT_INITIALIZED};
+
   struct {
     uint32_t start_time{0};
     uint32_t delay_ms{0};
     State next_state{State::IDLE};
   } wait_;
+
+  // uint8_t param_nr_{0};
 
   bool is_idling() const { return this->state_ == State::WAIT || this->state_ == State::IDLE; };
 
