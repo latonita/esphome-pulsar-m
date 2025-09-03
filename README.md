@@ -1,3 +1,11 @@
+[СПОДЭС/DLMS/COSEM](https://github.com/latonita/esphome-dlms-cosem) •
+[МЭК-61107/IEC-61107](https://github.com/latonita/esphome-iec61107-meter) •
+[Энергомера МЭК/IEC](https://github.com/latonita/esphome-energomera-iec) •
+[Энергомера CE](https://github.com/latonita/esphome-energomera-ce) •
+[СПб ЗИП ЦЭ2727А](https://github.com/latonita/esphome-ce2727a-meter) •
+[Ленэлектро ЛЕ-2](https://github.com/latonita/esphome-le2-meter) •
+[Пульсар-М](https://github.com/latonita/esphome-pulsar-m)
+
 # esphome-pulsar-m
 Подключение EspHome к счетчикам-регистраторам импульсов и счетчикам воды и газа с цифровым выходом по протоколу Пульсар-М через RS-485 
 (Пульсар-2М, Пульсар-4М, Пульсар-6М, Пульсар-10М, Пульсар-16М, Пульсар-24М и другие).
