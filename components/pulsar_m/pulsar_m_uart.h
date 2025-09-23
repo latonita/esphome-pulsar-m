@@ -127,6 +127,10 @@ class PulsarMUart final : public uart::ESP8266UartComponent {
 #endif
 
 #ifdef USE_ESP_IDF
+
+#ifndef portTICK_PERIOD_MS
+#define portTICK_PERIOD_MS portTICK_RATE_MS
+#endif
 class PulsarMUart final : public uart::IDFUARTComponent {
  public:
   PulsarMUart(uart::IDFUARTComponent &uart)
