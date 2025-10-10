@@ -4,7 +4,8 @@
 [Энергомера CE](https://github.com/latonita/esphome-energomera-ce) •
 [СПб ЗИП ЦЭ2727А](https://github.com/latonita/esphome-ce2727a-meter) •
 [Ленэлектро ЛЕ-2](https://github.com/latonita/esphome-le2-meter) •
-[Пульсар-М](https://github.com/latonita/esphome-pulsar-m)
+[Пульсар-М](https://github.com/latonita/esphome-pulsar-m) •
+[Энергомера BLE](https://github.com/latonita/esphome-energomera-ble)
 
 # esphome-pulsar-m
 Подключение EspHome к счетчикам-регистраторам импульсов и счетчикам воды и газа с цифровым выходом по протоколу Пульсар-М через RS-485 
