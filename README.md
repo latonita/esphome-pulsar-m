@@ -7,8 +7,10 @@
 [Пульсар-М](https://github.com/latonita/esphome-pulsar-m) •
 [Энергомера BLE](https://github.com/latonita/esphome-energomera-ble) •
 [Нартис RF433](https://github.com/latonita/esphome-nartis-rf-meter) •
-[Нартис RF433-2](https://github.com/latonita/esphome-uart-nartis-rf) •
+[Нартис RF433-2](https://github.com/latonita/esphome-nartis-rf-2-meter) •
+[Мост UART↔RF433-2](https://github.com/latonita/esphome-uart-nartis-rf) •
 [Nordic UART (BLE NUS)](https://github.com/latonita/esphome-nordic-uart-ble) •
+
 
 # esphome-pulsar-m
 Подключение EspHome к счетчикам-регистраторам импульсов и счетчикам воды и газа с цифровым выходом по протоколу Пульсар-М через RS-485 
