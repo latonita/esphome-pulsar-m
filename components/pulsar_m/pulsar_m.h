@@ -153,6 +153,7 @@ class PulsarMComponent : public PollingComponent, public uart::UARTDevice {
   } buffers_;
 
   void clear_rx_buffers_();
+  void log_hex_(const char *dir, const uint8_t *data, size_t len);
 
   void prepare_frame_(const uint8_t *data, size_t length, bool calc_crc = true);
   void send_frame_(const uint8_t *data, size_t length, bool calc_crc = true);
