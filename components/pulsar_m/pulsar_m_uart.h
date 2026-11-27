@@ -131,10 +131,11 @@ class PulsarMUart final : public uart::ESP8266UartComponent {
 #ifndef portTICK_PERIOD_MS
 #define portTICK_PERIOD_MS portTICK_RATE_MS
 #endif
-class PulsarMUart final : public uart::IDFUARTComponent {
+// IDFUARTComponent is final since ESPHome 2026.11 and can't be derived from, so use its public API only.
+class PulsarMUart {
  public:
   PulsarMUart(uart::IDFUARTComponent &uart)
-      : uart_(uart), iuart_num_(uart.*(&PulsarMUart::uart_num_)) {}
+      : uart_(uart), iuart_num_(static_cast<uart_port_t>(uart.get_hw_serial_number())) {}
 
   // Reconfigure baudrate
   void update_baudrate(uint32_t baudrate) {
@@ -145,11 +146,11 @@ class PulsarMUart final : public uart::IDFUARTComponent {
 
  protected:
   bool check_read_timeout_quick_(size_t len) {
-    if (uart_.available() >= int(len))
+    if (uart_.available() >= len)
       return true;
 
     uint32_t start_time = millis();
-    while (uart_.available() < int(len)) {
+    while (uart_.available() < len) {
       if (millis() - start_time > TIMEOUT) {
         return false;
       }
@@ -159,19 +160,9 @@ class PulsarMUart final : public uart::IDFUARTComponent {
   }
 
   bool read_array_quick_(uint8_t *data, size_t len) {
-    size_t length_to_read = len;
     if (!this->check_read_timeout_quick_(len))
       return false;
-    if (this->has_peek_) {
-      length_to_read--;
-      *data = this->peek_byte_;
-      data++;
-      this->has_peek_ = false;
-    }
-    if (length_to_read > 0)
-      uart_read_bytes(this->iuart_num_, data, length_to_read, 20 / portTICK_PERIOD_MS);
-
-    return true;
+    return this->uart_.read_array(data, len);
   }
 
   uart::IDFUARTComponent &uart_;

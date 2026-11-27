@@ -1,6 +1,7 @@
 //#include <bitset>
 #include <cstdint>
 #include "esphome/core/application.h"
+#include <algorithm>
 #include "esphome/core/log.h"
 #include "esphome/core/time.h"
 #include "object_locker.h"
@@ -9,7 +10,7 @@
 namespace esphome {
 namespace pulsar_m {
 
-static const char *TAG0 = "pulsar_m_";
+static constexpr char TAG0[] = "pulsar_m_";
 
 #define TAG (this->tag_.c_str())
 
@@ -262,7 +263,7 @@ void PulsarMComponent::loop() {
       // - or corrupted data and id doesn't trigger stop function
       if (this->buffers_.amount_in > 0) {
         this->stats_.crc_errors_++;
-        ESP_LOGVV(TAG, "RX: %s", format_hex_pretty(this->buffers_.in, this->buffers_.amount_in).c_str());
+        this->log_hex_("RX", this->buffers_.in, this->buffers_.amount_in);
       }
       this->clear_rx_buffers_();
 
@@ -626,7 +627,7 @@ void PulsarMComponent::send_frame_prepared_() {
   if (this->flow_control_pin_ != nullptr)
     this->flow_control_pin_->digital_write(false);
 
-  ESP_LOGV(TAG, "TX: %s", format_hex_pretty(this->buffers_.out, this->buffers_.amount_out).c_str());
+  this->log_hex_("TX", this->buffers_.out, this->buffers_.amount_out);
 }
 
 size_t PulsarMComponent::receive_frame_discovery_() {
@@ -636,7 +637,8 @@ size_t PulsarMComponent::receive_frame_discovery_() {
     }
 
     if (this->crc_16_ibm(data, len) != 0) {
-      ESP_LOGD(TAG, "Discovery Stop_Fn CRC is wrong. RX: %s", format_hex_pretty(data, len).c_str());
+      ESP_LOGD(TAG, "Discovery Stop_Fn CRC is wrong");
+      this->log_hex_("RX", data, len);
       return false;
     }
 
@@ -719,7 +721,7 @@ size_t PulsarMComponent::receive_frame_(FrameStopFunction stop_fn) {
     }
 
     if (stop_fn(this->buffers_.in, this->buffers_.amount_in)) {
-      ESP_LOGV(TAG, "RX: %s", format_hex_pretty(this->buffers_.in, this->buffers_.amount_in).c_str());
+      this->log_hex_("RX", this->buffers_.in, this->buffers_.amount_in);
       ret_val = this->buffers_.amount_in;
       this->buffers_.amount_in = 0;
       this->update_last_rx_time_();
@@ -906,7 +908,25 @@ void PulsarMComponent::unlock_uart_session_() {
 
 uint8_t PulsarMComponent::next_obj_id_ = 0;
 
-std::string PulsarMComponent::generateTag() { return str_sprintf("%s%03d", TAG0, ++next_obj_id_); }
+std::string PulsarMComponent::generateTag() {
+  // %03d of uint8_t is at most 3 digits; sizeof(TAG0) includes the trailing NUL.
+  char buf[sizeof(TAG0) + 3];
+  buf_append_printf(buf, sizeof(buf), 0, "%s%03d", TAG0, ++next_obj_id_);
+  return buf;
+}
+
+// Hex dump at VERY_VERBOSE, split into short lines: keeps the stack buffer small
+// and stays under the logger's line length limit.
+void PulsarMComponent::log_hex_(const char *dir, const uint8_t *data, size_t len) {
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERY_VERBOSE
+  static constexpr size_t CHUNK = 32;
+  char hex_buf[format_hex_pretty_size(CHUNK)];
+  for (size_t off = 0; off < len; off += CHUNK) {
+    size_t n = std::min(CHUNK, len - off);
+    ESP_LOGVV(TAG, "%s[%u]: %s", dir, static_cast<unsigned>(off), format_hex_pretty_to(hex_buf, data + off, n, '.'));
+  }
+#endif
+}
 
 }  // namespace pulsar_m
 }  // namespace esphome
